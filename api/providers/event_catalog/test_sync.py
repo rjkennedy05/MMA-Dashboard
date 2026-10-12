@@ -50,6 +50,6 @@ class CatalogWindowTests(TestCase):
         result, writes = self.run_catalog(html)
         self.assertEqual(result["status"], "completed")
         self.assertEqual(writes, 1)
-        self.assertEqual(result["entries"], [{"event_id": 42, "promotion_key": "pfl",
+        self.assertEqual(result["entries"], [{"external_id": "pfl:2026-chicago2", "event_id": 42, "promotion_key": "pfl",
             "name": "PFL Chicago 2", "date": date(2026, 10, 16).isoformat(),
             "external_url": "https://pflmma.com/event/2026-chicago2"}])

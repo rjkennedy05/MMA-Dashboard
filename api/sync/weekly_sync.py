@@ -63,6 +63,7 @@ from providers.espn_mma.importer import (  # noqa: E402
     PflImporter,
     UfcImporter,
 )
+from providers.pfl_official.fallback import sync_pfl_cards  # noqa: E402
 from providers.espn_mma.normalizer import (  # noqa: E402
     event_fights,
     event_in_window,
@@ -582,37 +583,7 @@ def sync_pfl(args, summary):
     if args.skip_pfl:
         summary["provider_runs"]["espn_mma"]["status"] = "skipped"
         return
-    client = EspnMmaClient(league="pfl")
-    today = datetime.now(ZoneInfo("America/Chicago")).date()
-    start, end = today-timedelta(days=args.past_days), today+timedelta(days=args.future_days)
-    all_events = client.get_events_in_window(start, end)
-    expected = [row for row in (summary["provider_runs"].get("official_catalog", {}).get("entries") or [])
-                if row["promotion_key"] in ("pfl",) and start.isoformat() <= row["date"] <= end.isoformat()]
-    def missing(rows):
-        return [entry for entry in expected if not any(
-            abs((date.fromisoformat(entry["date"])-parse_event_date(row)).days) <= 1
-            and event_match_score(entry["name"], event_name(row)) >= 0.64
-            for row in rows if parse_event_date(row))]
-    if missing(all_events):
-        try:
-            supplemental = client._get_core_events(start, end)
-            all_events = list({str(row["id"]): row for row in [*all_events,*supplemental]}.values())
-        except Exception as error:
-            summary["warnings"].append({"stage":"espn_mma","message":safe_error(error)})
-    for entry in missing(all_events):
-        summary["catalog_issues"].append({"code":"DETAIL_SOURCE_GAP","severity":"warning",
-            "promotion":entry["promotion_key"].upper(),"event_name":entry["name"],
-            "event_date":entry["date"],"message":"Official event retained; ESPN has no matching detailed card yet."})
-    events = sorted([row for row in all_events if event_in_window(row,start,end)],
-                    key=lambda row:(row.get("date") or "",event_name(row)))
-    def fetch(event):
-        try:
-            center = client.get_fightcenter(str(event["id"]))
-            return event, event_fights(event,center), []
-        except EspnMmaNoFightCardError:
-            return event, [], ["Event retained; the source has not published a usable card."]
-    process_cards(args,summary,client,PflImporter(supabase),all_events,events,"espn_mma",
-                  ("pfl",),event_name,fetch,should_refresh_listing,mark_listing_refreshed)
+    sync_pfl_cards(args, summary, supabase, should_refresh_listing, mark_listing_refreshed)
 
 
 def sync_one(args, summary):

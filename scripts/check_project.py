@@ -46,6 +46,7 @@ def main():
         "api/providers/lfa",
         "api/providers/bkfc",
         "api/providers/event_catalog",
+        "api/providers/pfl_official",
         "api/providers/the_odds_api",
         "api/providers/api_sports_mma",
         "api/providers/fightodds",
@@ -81,6 +82,7 @@ def main():
             "api.tests.test_reliability",
             "api.tests.test_release_contract",
             "scripts.test_scheduled_sync",
+            "scripts.test_patch_bundle",
         ],
     )
     for name, command in [

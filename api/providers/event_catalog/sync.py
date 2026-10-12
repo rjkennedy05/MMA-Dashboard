@@ -79,6 +79,7 @@ def sync_official_catalogs(
                 try:
                     imported = importer.import_event(entry, dry_run=dry_run)
                     result["entries"].append({
+                        "external_id": entry["external_id"],
                         "event_id": imported.get("event_id"), "promotion_key": entry["promotion_key"],
                         "name": entry["name"], "date": entry["date"].isoformat(),
                         "external_url": entry.get("external_url"),

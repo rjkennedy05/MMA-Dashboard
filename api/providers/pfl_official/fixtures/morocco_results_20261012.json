@@ -1,0 +1,288 @@
+[
+  {
+    "FightId": 10848,
+    "FightNumber": 1,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 975,
+    "WinnerResult": "red",
+    "WinBy": "TKO",
+    "RoundTime": "R1 4:06",
+    "WeightClass": "Heavyweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "975",
+        "FirstName": "Abdoulaye",
+        "LastName": "Kane",
+        "Corner": "Red"
+      },
+      {
+        "Id": "903",
+        "FirstName": "Badr",
+        "LastName": "Medkouri",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10845,
+    "FightNumber": 2,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 958,
+    "WinnerResult": "blue",
+    "WinBy": "Decision",
+    "RoundTime": "R3, 5:00",
+    "WeightClass": "Featherweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "887",
+        "FirstName": "Taha",
+        "LastName": "Bendaoud",
+        "Corner": "Red"
+      },
+      {
+        "Id": "958",
+        "FirstName": "Yanis",
+        "LastName": "Ghemmouri",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10851,
+    "FightNumber": 3,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 866,
+    "WinnerResult": "red",
+    "WinBy": "TKO",
+    "RoundTime": "R1, 1:03",
+    "WeightClass": "Welterweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "866",
+        "FirstName": "Shido",
+        "LastName": "Boris Esperança",
+        "Corner": "Red"
+      },
+      {
+        "Id": "1160",
+        "FirstName": "Peace",
+        "LastName": "Nguphane",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10847,
+    "FightNumber": 4,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 1006,
+    "WinnerResult": "red",
+    "WinBy": "KO",
+    "RoundTime": "R1, 2:46",
+    "WeightClass": "Lightweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "1006",
+        "FirstName": "Patrick",
+        "LastName": "Ocheme",
+        "Corner": "Red"
+      },
+      {
+        "Id": "1092",
+        "FirstName": "Cornel",
+        "LastName": "Thompson",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10850,
+    "FightNumber": 5,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 1162,
+    "WinnerResult": "blue",
+    "WinBy": "Decision",
+    "RoundTime": "R3, 5:00",
+    "WeightClass": "Welterweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "1167",
+        "FirstName": "Rivaldo",
+        "LastName": "Pereira",
+        "Corner": "Red"
+      },
+      {
+        "Id": "1162",
+        "FirstName": "David",
+        "LastName": "Samuel",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10849,
+    "FightNumber": 6,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 1096,
+    "WinnerResult": "blue",
+    "WinBy": "Decision",
+    "RoundTime": "R3, 5:00",
+    "WeightClass": "Welterweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "1025",
+        "FirstName": "Yabna",
+        "LastName": "N’tchala",
+        "Corner": "Red"
+      },
+      {
+        "Id": "1096",
+        "FirstName": "Mouhamed Tafsir",
+        "LastName": "Ba",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10941,
+    "FightNumber": 7,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 1120,
+    "WinnerResult": "red",
+    "WinBy": "Submission",
+    "RoundTime": "R1 2:11",
+    "WeightClass": "Bantamweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "1120",
+        "FirstName": "Reda",
+        "LastName": "Abdellaoui",
+        "Corner": "Red"
+      },
+      {
+        "Id": "1311",
+        "FirstName": "Salim",
+        "LastName": "Mhamdi",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10940,
+    "FightNumber": 8,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 1049,
+    "WinnerResult": "red",
+    "WinBy": "Decision",
+    "RoundTime": "R3, 5:00",
+    "WeightClass": "Bantamweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "1049",
+        "FirstName": "Dwight",
+        "LastName": "Joseph",
+        "Corner": "Red"
+      },
+      {
+        "Id": "986",
+        "FirstName": "Boule",
+        "LastName": "Godogo",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10939,
+    "FightNumber": 9,
+    "Status": "Finished",
+    "OverrideStatus": "no_contest",
+    "WinnerId": null,
+    "WinnerResult": "nocontest",
+    "WinBy": "",
+    "RoundTime": "",
+    "WeightClass": "Lightweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "1248",
+        "FirstName": "Demba",
+        "LastName": "Seck",
+        "Corner": "Red"
+      },
+      {
+        "Id": "1247",
+        "FirstName": "Hussain",
+        "LastName": "Al Kurdi",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10943,
+    "FightNumber": 10,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 1161,
+    "WinnerResult": "red",
+    "WinBy": "Decision",
+    "RoundTime": "R3, 5:00",
+    "WeightClass": "Catch Weight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "1161",
+        "FirstName": "Jane",
+        "LastName": "Osigwe",
+        "Corner": "Red"
+      },
+      {
+        "Id": "1312",
+        "FirstName": "Sanaa",
+        "LastName": "Mandar",
+        "Corner": "Blue"
+      }
+    ]
+  },
+  {
+    "FightId": 10942,
+    "FightNumber": 11,
+    "Status": "Finished",
+    "OverrideStatus": null,
+    "WinnerId": 978,
+    "WinnerResult": "red",
+    "WinBy": "Decision",
+    "RoundTime": "R3, 5:00",
+    "WeightClass": "Lightweight",
+    "MaxRounds": null,
+    "Fighters": [
+      {
+        "Id": "978",
+        "FirstName": "Abderrahman",
+        "LastName": "Errachidy",
+        "Corner": "Red"
+      },
+      {
+        "Id": "1313",
+        "FirstName": "Oussama",
+        "LastName": "El Idrissi",
+        "Corner": "Blue"
+      }
+    ]
+  }
+]

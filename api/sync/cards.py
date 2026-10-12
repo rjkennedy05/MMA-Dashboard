@@ -107,6 +107,7 @@ def process_cards(
     summary["events_seen"] += len(all_events)
     summary["events_in_window"] += len(events)
     run["status"] = "running"
+    verified = []
     for index, listed in enumerate(events, 1):
         label = name(listed)
         print(f"[{provider_key} {index}/{len(events)}] {label}")
@@ -180,6 +181,10 @@ def process_cards(
                         "message": issue["message"],
                     }
                 )
+            if (results and all(result["status"] in {"imported", "updated", "dry_run"}
+                                for result in results)
+                    and not saved.get("unconfirmed_omissions")) or saved.get("event_status") in {"cancelled", "canceled"}:
+                verified.append(listed)
             for result in results:
                 if result.get("fight_status") in {"completed", "draw", "no_contest"}:
                     summary["official_results_found"] += 1
@@ -202,3 +207,4 @@ def process_cards(
     run["status"] = "partial" if counts["event_errors"] else "completed"
     for key in promotion_keys:
         summary["providers"][key] = "failed" if counts["event_errors"] else "automatic"
+    return verified
