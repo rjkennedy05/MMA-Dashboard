@@ -53,6 +53,21 @@ def event_match_score(first: str, second: str) -> float:
     first_numbers, second_numbers = _numbers(a), _numbers(b)
     if first_numbers and second_numbers and not first_numbers.intersection(second_numbers):
         return 0.0
+    # Official PFL headings can omit the main-event fighters. Require a shared
+    # named location/brand prefix; "PFL" or "PFL 2" alone cannot establish identity.
+    # The caller still requires the same promotion/date and rejects tied matches.
+    if a.startswith("pfl ") and b.startswith("pfl "):
+        for short, long in ((a, b), (b, a)):
+            prefix = re.sub(r"\s+\d+$", "", short)
+            tokens = prefix.split()
+            if "vs" in short.split() or "v" in short.split():
+                continue
+            if len(tokens) >= 2 and not tokens[1].isdigit() and long.startswith(prefix + " "):
+                short_edition = re.fullmatch(re.escape(prefix) + r" (\d+)", short)
+                long_edition = re.match(re.escape(prefix) + r" (\d+)\b", long)
+                if short_edition and long_edition and short_edition[1] != long_edition[1]:
+                    return 0.0
+                return 0.80
     sequence = SequenceMatcher(None, a, b).ratio()
     tokens_a, tokens_b = set(a.split()), set(b.split())
     overlap = len(tokens_a & tokens_b) / max(len(tokens_a | tokens_b), 1)

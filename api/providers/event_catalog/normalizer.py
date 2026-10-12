@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
@@ -23,6 +23,10 @@ MONTHS = {
     )
 }
 MONTHS.update({name[:3]: number for name, number in list(MONTHS.items())})
+WEEKDAYS = {name: number for number, name in enumerate(
+    ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+)}
+EVENT_PATH = re.compile(r"^/(?:event|events)/[^/]+/?$", re.I)
 
 
 def normalized_text(value: Any) -> str:
@@ -147,15 +151,124 @@ def _entry(
     }
 
 
+def _timestamp_date(value: Any) -> date | None:
+    try:
+        instant = datetime.fromtimestamp(int(str(value)), timezone.utc)
+        if not 2000 <= instant.year <= 2100:
+            return None
+        return instant.astimezone(ZoneInfo("America/Chicago")).date()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _ufc_title(name: str, url: str) -> str:
+    if re.search(r"\bufc\b|contender series", name, re.I):
+        return name
+    slug = urlparse(url).path.rsplit("/", 1)[-1]
+    numbered = re.search(r"(?:^|-)ufc-(\d+)(?:-|$)", slug, re.I)
+    if numbered:
+        return f"UFC {numbered.group(1)}: {name}"
+    if "ufc-fight-night" in slug or "ufc-on-" in slug:
+        return f"UFC Fight Night: {name}"
+    if "contender-series" in slug or "dwcs" in slug:
+        season_week = re.search(r"season-(\d+)-week-(\d+)", slug)
+        if season_week:
+            return ("Dana White's Contender Series: Season " + season_week.group(1)
+                    + ", Week " + season_week.group(2))
+        return f"Dana White's Contender Series: {name}"
+    if "road-to-ufc" in slug:
+        return f"Road to UFC: {name}"
+    return name
+
+
+def _pfl_partial_date(text: str, url: str, section: str, today: date) -> date | None:
+    """Use section direction and weekday to resolve a missing year, never archives."""
+    written = re.search(
+        r"\b(" + "|".join(MONTHS) + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+        text, re.I,
+    )
+    weekday = re.search(
+        r"\b(mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|"
+        r"fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", text, re.I,
+    )
+    if not written or not weekday:
+        return None
+    years = set(re.findall(r"(?<!\d)(20\d{2})(?!\d)", urlparse(url).path))
+    if len(years) > 1:
+        return None
+    if len(years) == 1:
+        candidates = [int(next(iter(years)))]
+    elif section == "nav-upcoming":
+        candidates = [today.year, today.year + 1]
+    elif section == "nav-past":
+        candidates = [today.year, today.year - 1]
+    else:
+        return None
+    for year in candidates:
+        try:
+            day = date(year, MONTHS[written.group(1).lower().rstrip(".")], int(written.group(2)))
+        except ValueError:
+            continue
+        if day.weekday() != WEEKDAYS[weekday.group(1).lower()[:3]]:
+            continue
+        if section == "nav-upcoming" and not 0 <= (day - today).days <= 366:
+            continue
+        if section == "nav-past" and not 0 <= (today - day).days <= 366:
+            continue
+        return day
+    return None
+
+
+def _visible_schedule(soup, catalog: str, base_url: str, today: date):
+    selector = ".c-card-event--result__info" if catalog == "ufc" else ".event-card-info"
+    for card in soup.select(selector):
+        heading = card.select_one("h3")
+        if heading is None:
+            continue
+        links = heading.find_all("a", href=True) if catalog == "ufc" else card.find_all("a", href=True)
+        url = next((url for link in links
+                    if (url := _event_url(link.get("href"), base_url))
+                    and EVENT_PATH.match(urlparse(url).path)), None)
+        if not url:
+            continue
+        name = heading.get_text(" ", strip=True)
+        if catalog == "ufc":
+            date_node = card.select_one(".c-card-event--result__date")
+            if date_node is None:
+                continue
+            event_date = _timestamp_date(date_node.get("data-main-card-timestamp"))
+            # A missing/invalid main-card value may use the event's prelim start.
+            # Ticket-sale timestamps elsewhere in the listing are never used.
+            if event_date is None:
+                event_date = _timestamp_date(date_node.get("data-prelims-card-timestamp"))
+            name = _ufc_title(name, url)
+        else:
+            date_node = card.select_one("time, h6")
+            if date_node is None:
+                continue
+            text = date_node.get_text(" ", strip=True)
+            event_date = _date(date_node.get("datetime")) or _date(text)
+            if event_date is None:
+                section = next((p.get("id") for p in card.parents
+                                if p.get("id") in {"nav-upcoming", "nav-past", "nav-all"}), "")
+                event_date = _pfl_partial_date(text, url, section, today)
+        candidate = _entry(catalog, name, event_date, url, base_url)
+        if candidate:
+            yield candidate
+
+
 def parse_official_catalog(
     html: str,
     catalog: str,
     base_url: str,
+    *,
+    reference_date: date | None = None,
 ) -> list[dict[str, Any]]:
     if catalog not in {"ufc", "pfl"}:
         raise ValueError("Official catalog must be UFC or PFL.")
     soup = BeautifulSoup(html, "html.parser")
     candidates: list[dict[str, Any]] = []
+    today = reference_date or datetime.now(ZoneInfo("America/Chicago")).date()
 
     for script in soup.select('script[type="application/ld+json"], script#__NEXT_DATA__'):
         try:
@@ -179,12 +292,22 @@ def parse_official_catalog(
             if candidate:
                 candidates.append(candidate)
 
+    candidates.extend(_visible_schedule(soup, catalog, base_url, today))
+
     link_pattern = re.compile(r"/(?:event|events)/[^/#?]+", re.I)
     for link in soup.find_all("a", href=link_pattern):
+        if link.find_parent(class_="event-card-info") or link.find_parent(class_="c-card-event--result__info"):
+            continue
+        clean_url = _event_url(link.get("href"), base_url)
+        if not clean_url or not EVENT_PATH.match(urlparse(clean_url).path):
+            continue
         container = link
         event_date = None
         text = ""
         for _ in range(5):
+            other_urls = {_event_url(a.get("href"), base_url) for a in container.find_all("a", href=link_pattern)}
+            if len(other_urls - {None, clean_url}) > 0:
+                break  # Never borrow another event's title/date from a shared parent.
             text = " ".join(container.get_text(" ", strip=True).split())
             time_node = container.find("time") if hasattr(container, "find") else None
             event_date = _date(time_node.get("datetime") if time_node else None) or _date(text)
@@ -197,11 +320,11 @@ def parse_official_catalog(
         if heading is None and hasattr(container, "find"):
             heading = container.find(["h1", "h2", "h3", "h4"])
         name = heading.get_text(" ", strip=True) if heading else link.get_text(" ", strip=True)
-        candidate = _entry(catalog, name, event_date, link.get("href"), base_url)
+        candidate = _entry(catalog, name, event_date, clean_url, base_url)
         if candidate:
             candidates.append(candidate)
 
-    unique: dict[tuple[str, str, str], dict[str, Any]] = {}
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
     for candidate in candidates:
         identity = (
             candidate["promotion_key"],

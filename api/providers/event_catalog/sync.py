@@ -55,9 +55,10 @@ def sync_official_catalogs(
         result["catalogs"][catalog] = metrics
         try:
             html, source_url = client.get_catalog(catalog)
+            parsed = parse_official_catalog(html, catalog, source_url, reference_date=today)
             entries = [
                 row
-                for row in parse_official_catalog(html, catalog, source_url)
+                for row in parsed
                 if start <= row["date"] <= end
                 and (
                     requested_scope in {"all", catalog}
@@ -65,10 +66,14 @@ def sync_official_catalogs(
                 )
             ]
             metrics["events"] = len(entries)
+            metrics["dated_events_on_page"] = len(parsed)
             metrics["source"] = CATALOG_URLS[catalog]
-            if not entries:
+            if not parsed or not any(
+                today - timedelta(days=366) <= row["date"] <= today + timedelta(days=366)
+                for row in parsed
+            ):
                 raise RuntimeError(
-                    f"{catalog.upper()} official catalog returned no dated events in the coverage window."
+                    f"{catalog.upper()} official catalog returned no verifiable recent/upcoming dated events."
                 )
             for entry in entries:
                 try:
