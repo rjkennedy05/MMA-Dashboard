@@ -43,6 +43,13 @@ class FakeSupabase:
     def __init__(self) -> None:
         self.inserted = []
 
+    def rpc(self,name,args):
+        if name!="mma_record_odds":raise AssertionError(name)
+        def execute():
+            self.inserted.extend(args["p_rows"])
+            return types.SimpleNamespace(data={"inserted":len(args["p_rows"]),"unchanged":0,"skipped":0})
+        return types.SimpleNamespace(execute=execute)
+
     def table(self, _name):
         return FakeQuery(self)
 

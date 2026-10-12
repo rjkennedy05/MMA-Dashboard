@@ -26,6 +26,8 @@ except ImportError:
     )
 
 
+from providers.errors import safe_error
+
 def configure_utf8_console() -> None:
     """Keep fighter names Unicode-safe in Windows consoles and task pipes."""
     for stream in (sys.stdout, sys.stderr):
@@ -356,13 +358,13 @@ if __name__ == "__main__":
                 build_review_record(
                     api_fight,
                     status="failed",
-                    reason=str(error),
+                    reason=safe_error(error),
                 )
             )
 
             print(
                 "  FAILED:",
-                error,
+                safe_error(error),
             )
 
     report_path = write_review_report(

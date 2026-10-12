@@ -1,3 +1,4 @@
+import providerAliases from "../../api/providers/sportsbooks.json" with {type:"json"};
 export const BET_SPORTSBOOKS = ["FD", "DK", "B365", "HR", "BO"];
 
 const SPORTSBOOK_ALIASES = {
@@ -16,7 +17,8 @@ function compactBookName(value) {
 }
 
 export function normalizeSportsbook(value) {
-  const compact = compactBookName(value);
+  const raw=compactBookName(value);
+  const compact = compactBookName(providerAliases[raw] || value);
 
   for (const [shortName, aliases] of Object.entries(SPORTSBOOK_ALIASES)) {
     if (

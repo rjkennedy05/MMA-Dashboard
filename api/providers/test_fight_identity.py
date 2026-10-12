@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 import unittest
+from api.tests.fakes import rpc as fake_rpc
 from unittest.mock import patch
 
 from api.providers.bkfc.importer import BkfcImporter
@@ -60,6 +61,8 @@ class MemoryQuery:
 
 
 class MemoryDatabase:
+    rpc = fake_rpc
+
     def __init__(self, mapped=True):
         self.rows = {
             "fights": [{
@@ -204,6 +207,7 @@ def load_ufcstats_importer(database):
     # only that connection and unused scrapers; run the real import_fight code.
     uploader = ModuleType("uploader")
     uploader.supabase = database
+    uploader.get_ufcstats_source_id = lambda: 1
     fighter_importer = ModuleType("fighter_importer")
     fighter_importer.import_fighter = lambda *_args: (_ for _ in ()).throw(AssertionError("Unexpected scrape"))
     detail_scraper = ModuleType("fight_detail_scraper")

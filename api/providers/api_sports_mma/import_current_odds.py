@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+from providers.persistence import save_entity
+from providers.errors import safe_error
 from typing import Any
 
 from providers.the_odds_api.fight_matcher import load_database_fights, match_api_fight
@@ -19,16 +22,11 @@ def _source_id() -> int:
 
 
 def _attach_mapping(source_id: int, fight_id: int, external_id: str) -> None:
-    existing = supabase.table("external_ids").select("external_id_map_id").eq("entity_type", "fight").eq("internal_id", fight_id).eq("source_id", source_id).limit(1).execute()
-    payload = {"entity_type": "fight", "internal_id": fight_id, "source_id": source_id, "external_id": external_id, "external_url": None}
-    if existing.data:
-        supabase.table("external_ids").update(payload).eq("external_id_map_id", existing.data[0]["external_id_map_id"]).execute()
-    else:
-        supabase.table("external_ids").insert(payload).execute()
+    save_entity(supabase,"fight",{},source_id,external_id,existing_id=fight_id)
 
 
 def _is_plan_date_limit(error: ApiSportsMmaError) -> bool:
-    message = str(error).casefold()
+    message = safe_error(error).casefold()
     return "free plan" in message or "do not have access to this date" in message
 
 
@@ -36,10 +34,13 @@ def import_api_sports_odds(
     max_days: int = 4,
     max_requests: int = 10,
     provider_future_days: int = 1,
+    target_fight_ids: set[int] | None = None,
 ) -> dict[str, Any]:
     client = ApiSportsMmaClient(max_requests=max_requests)
     database_fights = load_database_fights()
-    today = date.today()
+    if target_fight_ids is not None:
+        database_fights = [f for f in database_fights if int(f["fight_id"]) in target_fight_ids]
+    today = datetime.now(ZoneInfo("America/Chicago")).date()
     relevant_dates = sorted({
         str((fight.get("events") or {}).get("event_date"))
         for fight in database_fights
@@ -81,7 +82,7 @@ def import_api_sports_odds(
                 metrics["plan_limited_dates"].append(event_date)
                 continue
             metrics["failures"] += 1
-            metrics["failure_messages"].append(str(error))
+            metrics["failure_messages"].append(safe_error(error))
             continue
         for raw in raw_rows:
             metrics["raw_rows"] += 1
@@ -108,7 +109,7 @@ def import_api_sports_odds(
                 metrics["unchanged"] += result["unchanged"]
             except Exception as error:
                 metrics["failures"] += 1
-                metrics["failure_messages"].append(str(error))
+                metrics["failure_messages"].append(safe_error(error))
     metrics["requests"] = client.request_count
     metrics["remaining"] = client.daily_remaining
     if metrics["failures"]:

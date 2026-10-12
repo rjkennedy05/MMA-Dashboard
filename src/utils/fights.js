@@ -7,12 +7,13 @@ function normalizedFighterName(value) {
 }
 
 export function fightMatchupKey(fight) {
+  const context=`${fight?.event_id??""}:${String(fight?.ruleset??"MMA").toLowerCase()}:${String(fight?.bout_type??"").toLowerCase()}`;
   const names = [
     normalizedFighterName(fight?.fighter_a?.full_name),
     normalizedFighterName(fight?.fighter_b?.full_name),
   ];
   if (names.every(Boolean)) {
-    return `names:${names.sort().join("::")}`;
+    return `${context}:names:${names.sort().join("::")}`;
   }
 
   const fighterIds = [fight?.fighter_a_id, fight?.fighter_b_id]
@@ -20,7 +21,7 @@ export function fightMatchupKey(fight) {
     .filter(Number.isFinite)
     .sort((a, b) => a - b);
   return fighterIds.length === 2
-    ? `ids:${fighterIds.join("::")}`
+    ? `${context}:ids:${fighterIds.join("::")}`
     : `fight:${fight?.fight_id ?? "unknown"}`;
 }
 

@@ -4,6 +4,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from providers.persistence import find_identity, save_entity, lease_arguments, rpc_value
+from providers.sportsbooks import sportsbook_key as canonical_book_key
 
 API_ROOT = Path(__file__).resolve().parents[2]
 UFCSTATS_ROOT = API_ROOT / "ufcstats"
@@ -140,31 +142,7 @@ def get_existing_external_mapping(
     source_id: int,
     external_id: str,
 ) -> dict[str, Any] | None:
-    response = (
-        supabase
-        .table("external_ids")
-        .select(
-            "external_id_map_id, internal_id"
-        )
-        .eq(
-            "entity_type",
-            "fight",
-        )
-        .eq(
-            "source_id",
-            source_id,
-        )
-        .eq(
-            "external_id",
-            external_id,
-        )
-        .execute()
-    )
-
-    if response.data:
-        return response.data[0]
-
-    return None
+    return find_identity(supabase,"fight",source_id,external_id)
 
 
 def create_external_mapping(
@@ -172,21 +150,7 @@ def create_external_mapping(
     fight_id: int,
     external_id: str,
 ) -> None:
-    (
-        supabase
-        .table("external_ids")
-        .insert(
-            {
-                "entity_type": "fight",
-                "internal_id": fight_id,
-                "source_id": source_id,
-                "external_id":
-                    external_id,
-                "external_url": None,
-            }
-        )
-        .execute()
-    )
+    save_entity(supabase,"fight",{},source_id,external_id,existing_id=fight_id)
 
 
 def latest_price_matches(
@@ -308,16 +272,6 @@ def import_moneylines(
 
                 american_odds = int(price)
 
-                if latest_price_matches(
-                    fight_id,
-                    fighter_id,
-                    sportsbook,
-                    american_odds,
-                    source_id,
-                ):
-                    unchanged += 1
-                    continue
-
                 rows.append(
                     {
                         "fight_id": fight_id,
@@ -326,7 +280,7 @@ def import_moneylines(
                         "sportsbook":
                             sportsbook,
                         "sportsbook_key":
-                            sportsbook_key,
+                            canonical_book_key(sportsbook,sportsbook_key),
                         "market_type":
                             "moneyline",
                         "selection_name":
@@ -343,7 +297,7 @@ def import_moneylines(
                             ),
                         "source_id":
                             source_id,
-                        "recorded_at":
+                        "provider_updated_at":
                             recorded_at,
                         "market_commence_time":
                             api_fight.get(
@@ -353,136 +307,10 @@ def import_moneylines(
                 )
 
     if rows:
-        response = (
-            supabase
-            .table("odds")
-            .insert(rows)
-            .execute()
-        )
-
-        if response.data is None:
-            raise RuntimeError(
-                "Odds insert returned "
-                "no response data."
-            )
-
-        inserted = len(rows)
-
-    return {
-        "inserted": inserted,
-        "unchanged": unchanged,
-        "skipped": skipped,
-    }
+        result = rpc_value(supabase.rpc("mma_record_odds", {"p_rows":rows,**lease_arguments()}).execute())
+        return {"inserted":result["inserted"],"unchanged":result["unchanged"],"skipped":skipped+result["skipped"]}
+    return {"inserted":0,"unchanged":0,"skipped":skipped}
 
 
 if __name__ == "__main__":
-    try:
-        from .client import get_current_mma_moneylines
-    except ImportError:
-        from client import get_current_mma_moneylines
-    api_fights, usage = (
-        get_current_mma_moneylines()
-    )
-
-    api_fight = find_api_fight(
-        api_fights
-    )
-
-    print("\nOdds API matchup:")
-    print(
-        api_fight["home_team"],
-        "vs",
-        api_fight["away_team"],
-    )
-    print(
-        "Odds API ID:",
-        api_fight["id"],
-    )
-
-    source_id = get_odds_source_id()
-
-    existing_mapping = (
-        get_existing_external_mapping(
-            source_id,
-            api_fight["id"],
-        )
-    )
-
-    database_fights = (
-        load_database_fights()
-    )
-
-    if existing_mapping:
-        fight_id = int(
-            existing_mapping[
-                "internal_id"
-            ]
-        )
-
-        database_fight = next(
-            (
-                fight
-                for fight in database_fights
-                if int(
-                    fight["fight_id"]
-                ) == fight_id
-            ),
-            None,
-        )
-
-        if not database_fight:
-            raise RuntimeError(
-                "The external mapping points "
-                "to a missing fight."
-            )
-
-        print(
-            "Existing fight mapping:",
-            fight_id,
-        )
-
-    else:
-        match_result = match_api_fight(
-            api_fight,
-            database_fights,
-        )
-
-        if (
-            match_result["status"]
-            != "matched"
-        ):
-            raise RuntimeError(
-                "Fight matching failed: "
-                f"{match_result}"
-            )
-
-        database_fight = (
-            match_result["fight"]
-        )
-
-        fight_id = int(
-            database_fight["fight_id"]
-        )
-
-        create_external_mapping(
-            source_id,
-            fight_id,
-            api_fight["id"],
-        )
-
-        print(
-            "Created fight mapping:",
-            fight_id,
-        )
-
-    import_result = import_moneylines(
-        api_fight,
-        database_fight,
-        source_id,
-    )
-
-    print("\nOdds import result:")
-    print(import_result)
-
-    print("\nUsage:")
-    print(usage)
+    raise SystemExit("Use npm run sync:odds for the current card window. This helper does not import a hard-coded demonstration matchup.")

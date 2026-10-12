@@ -15,10 +15,11 @@ from providers.fight_identity import preserve_fight_identity
 from fighter_importer import import_fighter
 from fight_detail_scraper import scrape_fight_detail
 from matching import matching_fight_id
-from uploader import supabase
+from uploader import supabase, get_ufcstats_source_id
+from providers.persistence import find_identity, save_entity
 
 
-UFCSTATS_SOURCE_ID = 1
+
 
 
 def utc_now() -> str:
@@ -29,35 +30,8 @@ def get_external_id(url: str) -> str:
     return url.rstrip("/").split("/")[-1]
 
 
-def find_external_mapping(
-    entity_type: str,
-    external_id: str,
-) -> dict[str, Any] | None:
-    response = (
-        supabase
-        .table("external_ids")
-        .select(
-            "external_id_map_id, internal_id"
-        )
-        .eq(
-            "entity_type",
-            entity_type,
-        )
-        .eq(
-            "source_id",
-            UFCSTATS_SOURCE_ID,
-        )
-        .eq(
-            "external_id",
-            external_id,
-        )
-        .execute()
-    )
-
-    if response.data:
-        return response.data[0]
-
-    return None
+def find_external_mapping(entity_type: str, external_id: str):
+    return find_identity(supabase, entity_type, get_ufcstats_source_id(), external_id)
 
 
 def get_event_id(event_url: str) -> int:
@@ -103,16 +77,7 @@ def attach_fight_mapping(
     external_id: str,
     fight_url: str,
 ) -> None:
-    supabase.table("external_ids").insert(
-        {
-            "entity_type": "fight",
-            "internal_id": fight_id,
-            "source_id": UFCSTATS_SOURCE_ID,
-            "external_id": external_id,
-            "external_url": fight_url,
-            "updated_at": utc_now(),
-        }
-    ).execute()
+    save_entity(supabase,"fight",{},get_ufcstats_source_id(),external_id,fight_id,fight_url)
 
 
 def get_or_import_fighter(
@@ -345,6 +310,11 @@ def import_fight(
             fight_url
         )
 
+    if dry_run:
+        mapping = find_external_mapping("fight", get_external_id(fight_url))
+        return {"status": "dry_run", "fight_id": int(mapping["internal_id"]) if mapping else None,
+                "fight_status": detail.get("fight_status"), "winner_id": None}
+
     fight_data = build_fight_data(
         event_id,
         fight,
@@ -360,165 +330,10 @@ def import_fight(
         external_id,
     )
 
-    if dry_run:
-        print(
-            "\nDRY RUN — no database changes"
-        )
-        print(fight_data)
-
-        return {
-            "status": "dry_run",
-            "fight_id": (
-                existing["internal_id"]
-                if existing
-                else None
-            ),
-            "fight_status": detail.get("fight_status"),
-            "winner_id": fight_data.get("winner_id"),
-        }
-
-    if existing:
-        fight_id = int(
-            existing["internal_id"]
-        )
-
+    fight_id = int(existing["internal_id"]) if existing else find_existing_fight(
+        event_id, int(fight_data["fighter_a_id"]), int(fight_data["fighter_b_id"]))
+    if fight_id is not None:
         fight_data = preserve_fight_identity(supabase, fight_id, fight_data)
-        response = (
-            supabase
-            .table("fights")
-            .update(fight_data)
-            .eq(
-                "fight_id",
-                fight_id,
-            )
-            .execute()
-        )
-
-        if not response.data:
-            raise RuntimeError(
-                "Fight update returned no data."
-            )
-
-        (
-            supabase
-            .table("external_ids")
-            .update(
-                {
-                    "external_url":
-                        fight_url,
-
-                    "updated_at":
-                        utc_now(),
-                }
-            )
-            .eq(
-                "external_id_map_id",
-                existing[
-                    "external_id_map_id"
-                ],
-            )
-            .execute()
-        )
-
-        print(
-            "UPDATED:",
-            fight["fighter_a_name"],
-            "vs",
-            fight["fighter_b_name"],
-        )
-
-        return {
-            "status": "updated",
-            "fight_id": fight_id,
-            "fight_status": detail.get("fight_status"),
-            "winner_id": fight_data.get("winner_id"),
-        }
-
-    existing_fight_id = find_existing_fight(
-        event_id,
-        int(fight_data["fighter_a_id"]),
-        int(fight_data["fighter_b_id"]),
-    )
-    if existing_fight_id is not None:
-        fight_data = preserve_fight_identity(supabase, existing_fight_id, fight_data)
-        response = (
-            supabase
-            .table("fights")
-            .update(fight_data)
-            .eq("fight_id", existing_fight_id)
-            .execute()
-        )
-        if not response.data:
-            raise RuntimeError(
-                "Existing fight attachment update returned no data."
-            )
-        attach_fight_mapping(
-            existing_fight_id,
-            external_id,
-            fight_url,
-        )
-        print(
-            "ATTACHED UFCSTATS:",
-            fight["fighter_a_name"],
-            "vs",
-            fight["fighter_b_name"],
-        )
-        return {
-            "status": "updated",
-            "fight_id": existing_fight_id,
-            "fight_status": detail.get("fight_status"),
-            "winner_id": fight_data.get("winner_id"),
-        }
-
-    inserted = (
-        supabase
-        .table("fights")
-        .insert(fight_data)
-        .execute()
-    )
-
-    if not inserted.data:
-        raise RuntimeError(
-            "Fight insert returned no data."
-        )
-
-    fight_id = int(
-        inserted.data[0]["fight_id"]
-    )
-
-    try:
-        attach_fight_mapping(
-            fight_id,
-            external_id,
-            fight_url,
-        )
-
-    except Exception:
-        # Avoid leaving a fight without its
-        # external-ID mapping.
-        (
-            supabase
-            .table("fights")
-            .delete()
-            .eq(
-                "fight_id",
-                fight_id,
-            )
-            .execute()
-        )
-
-        raise
-
-    print(
-        "IMPORTED:",
-        fight["fighter_a_name"],
-        "vs",
-        fight["fighter_b_name"],
-    )
-
-    return {
-        "status": "imported",
-        "fight_id": fight_id,
-        "fight_status": detail.get("fight_status"),
-        "winner_id": fight_data.get("winner_id"),
-    }
+    result = save_entity(supabase, "fight", fight_data, get_ufcstats_source_id(), external_id, fight_id, fight_url)
+    return {"status": result["status"], "fight_id": int(result["internal_id"]),
+            "fight_status": result["row"]["fight_status"], "winner_id": result["row"].get("winner_id")}

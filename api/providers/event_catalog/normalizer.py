@@ -7,6 +7,7 @@ import unicodedata
 from datetime import date, datetime
 from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
@@ -35,6 +36,13 @@ def _date(value: Any) -> date | None:
     text = str(value or "").strip()
     if not text:
         return None
+    if "T" in text:
+        try:
+            instant = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if instant.tzinfo:
+                return instant.astimezone(ZoneInfo("America/Chicago")).date()
+        except ValueError:
+            pass
     iso = re.search(r"(20\d{2})-(\d{2})-(\d{2})", text)
     if iso:
         try:
@@ -86,7 +94,8 @@ def _event_url(value: Any, base_url: str) -> str | None:
         text = "/events/" + text.strip("/")
     url = urljoin(base_url, text)
     parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname:
+    trusted_hosts = {"www.ufc.com", "ufc.com", "pflmma.com", "www.pflmma.com"}
+    if parsed.scheme != "https" or parsed.hostname not in trusted_hosts:
         return None
     return url.split("#", 1)[0].split("?", 1)[0]
 
@@ -196,8 +205,7 @@ def parse_official_catalog(
     for candidate in candidates:
         identity = (
             candidate["promotion_key"],
-            candidate["date"].isoformat(),
-            normalized_text(candidate["name"]),
+            candidate["external_id"],
         )
         existing = unique.get(identity)
         if not existing or (not existing.get("external_url") and candidate.get("external_url")):

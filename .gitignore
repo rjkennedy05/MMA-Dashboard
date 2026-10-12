@@ -29,3 +29,10 @@ api/sync/state/
 *.sw?
 .env
 api/.env
+
+.venv/
+discord-companion/sync-state.json*
+discord-companion/setup-state.json*
+discord-companion/bot-settings.json
+discord-companion/event-overrides.json
+discord-companion/.sync.lock

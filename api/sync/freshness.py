@@ -5,6 +5,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 def fingerprint(value: Any) -> str:
@@ -52,7 +53,7 @@ class EventFreshnessCache:
     ) -> bool:
         if force or event_date is None:
             return True
-        days = (event_date - self.now.date()).days
+        days = (event_date - self.now.astimezone(ZoneInfo("America/Chicago")).date()).days
         # Results and the next week are always live work. Distant cards are
         # refreshed immediately when their listing changes, otherwise every
         # three days instead of every morning.

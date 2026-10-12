@@ -10,7 +10,7 @@ import time
 from urllib.parse import urlparse
 
 from setup_discord import SetupError
-from sync_discord import normalized, parsed_time, promotion, local_day, status
+from sync_discord import chicago, normalized, parsed_time, promotion, local_day, status
 from provider_runtime import ARCHIVED_PROMOTIONS, provider_module
 
 
@@ -159,6 +159,10 @@ def convert_fights(provider, event, rows, previous, identities=None):
         source_key = provider + ":" + str(row["external_id"])
         same_source = [f for f in previous if f.get("_source_fight") == source_key]
         old = pair[0] if pair else same_source[0] if len(same_source) == 1 else None
+        if old and not pair:
+            old_pair={normalized((old.get(side) or {}).get("full_name")) for side in ("fighter_a","fighter_b")}
+            if old_pair!={normalized(a["name"]),normalized(b["name"])}:
+                raise SourceError("A reused source ID changed a stored opponent. Saved bets and the previous card were kept; review that matchup before refreshing.")
         fight_id = old["fight_id"] if old else synthetic_id(provider, row["external_id"])
         fighters = []
         paired = [old.get("fighter_a") or {}, old.get("fighter_b") or {}] if pair else [{}, {}]
@@ -182,11 +186,12 @@ def convert_fights(provider, event, rows, previous, identities=None):
         # A missing outcome marker must not erase a previously confirmed outcome.
         missing_result = status(fight_status) != "completed" or (
             winner is None and normalized(row.get("result_type")) not in {"draw", "no contest"})
-        if old and old_status == "completed" and missing_result:
+        if old and old_status in {"completed","draw","no_contest"} and missing_result:
             result = deepcopy(old)
             result["_source_fight"] = source_key
             converted.append(result)
             continue
+        if old and pair and pair[1]=="reverse":fighters.reverse()
         base = deepcopy(old or {})
         base.update(fight_id=fight_id, event_id=event["event_id"],
                     fighter_a=fighters[0], fighter_b=fighters[1],
@@ -398,6 +403,9 @@ def fetch_fight_card(event, previous, links, now, override=None, identities=None
         # Large shrinkage is a partial response, not proof of mass cancellations.
         if len(fights) < len(previous) * 0.6:
             complete = False
+        known = {str(f["fight_id"]) for f in fights}
+        if any(str(f["fight_id"]) not in known for f in previous):
+            complete=False
         if not complete:
             known = {str(f["fight_id"]) for f in fights}
             fights.extend(deepcopy(f) for f in previous if str(f["fight_id"]) not in known)
@@ -418,6 +426,7 @@ def fetch_fight_card(event, previous, links, now, override=None, identities=None
 
 
 def _odds_rows(boards, fights, now, source):
+    from providers.sportsbooks import sportsbook_key
     result, covered = [], set()
     for board in boards:
         match = strict_pair(board["fighter_one"], board["fighter_two"], fights)
@@ -429,7 +438,7 @@ def _odds_rows(boards, fights, now, source):
             sides.reverse()
         for book in board.get("sportsbooks", []):
             name = book.get("sportsbook") or ""
-            key = book.get("sportsbook_key") or normalized(name).replace(" ", "")
+            key = sportsbook_key(name,book.get("sportsbook_key"))
             if not key or re.search(r"\b(?:best|opening|opener|average|consensus)\b", normalized(name)):
                 continue
             for fighter, column in zip(sides, ("fighter_one_odds", "fighter_two_odds")):
@@ -438,8 +447,9 @@ def _odds_rows(boards, fights, now, source):
                     result.append({"fight_id": fight["fight_id"], "fighter_id": fighter,
                                    "sportsbook": name, "sportsbook_key": key,
                                    "american_odds": int(price), "recorded_at": now.isoformat(),
-                                   "provider_updated_at": book.get("updated_at"), "source": source})
-                    covered.add(str(fight["fight_id"]))
+                                   "observed_at":now.isoformat(),"provider_updated_at": book.get("updated_at"), "source": source})
+            present={r["fighter_id"] for r in result if r["fight_id"]==fight["fight_id"] and r["sportsbook_key"]==key}
+            if set(sides)<=present:covered.add(str(fight["fight_id"]))
     return result, len(covered)
 
 
@@ -450,6 +460,7 @@ def fetch_odds(event, fights, links, now, override=None, odds_config=None):
     override, odds_config = override or {}, odds_config or {}
     n, module = provider_module("fightodds", "normalizer"), provider_module("fightodds", "client")
     urls = [override.get("odds_url")] + [r.get("external_url") if isinstance(r, dict) else r for r in links or []]
+    public_rows=[];public_covered=0;odds_url=None
     try:
         odds_url = next((u for u in urls if safe_source_url(u, {"fightodds.io"}, r"^/(?:mma-events|odds)/\d+/")), None)
         if odds_url and "/mma-events/" in odds_url:
@@ -460,12 +471,16 @@ def fetch_odds(event, fights, links, now, override=None, odds_config=None):
                 odds_url = row["odds_url"]
             boards = n.parse_event_odds(client.get_event_odds(odds_url))
         rows, covered = _odds_rows(boards, active, now, "FightOdds")
-        if rows:
+        public_rows,public_covered=rows,covered
+        if covered==len(active):
             return {"rows": rows, "covered": covered, "total": len(active), "source": "FightOdds",
                     "source_url": odds_url, "checked_at": now.isoformat()}
     except Exception:
         pass
     api_key = odds_config.get("THE_ODDS_API_KEY")
+    if not api_key and public_rows:
+        return {"rows":public_rows,"covered":public_covered,"total":len(active),"source":"FightOdds",
+            "source_url":odds_url,"checked_at":now.isoformat(),"warnings":["Some matchups have no published two-sided odds yet."]}
     if not api_key:
         raise SourceError("FightOdds has no usable matching moneylines or could not load. Run 07-INSTALL-COMMANDS.bat if this is the first check; you can also set this event's odds_url.")
     session = ReaderSession(seconds=40)
@@ -479,7 +494,7 @@ def fetch_odds(event, fights, links, now, override=None, odds_config=None):
         boards = []
         for matchup in payload:
             when = parsed_time(matchup.get("commence_time"))
-            if when and local_day(event) and abs((when.date() - local_day(event)).days) > 2:
+            if when and local_day(event) and abs((when.astimezone(chicago()).date() - local_day(event)).days) > 2:
                 continue
             books = []
             first, second = matchup.get("home_team"), matchup.get("away_team")
@@ -493,15 +508,20 @@ def fetch_odds(event, fights, links, now, override=None, odds_config=None):
                                       "fighter_one_odds": prices[first], "fighter_two_odds": prices[second],
                                       "updated_at": market.get("last_update") or book.get("last_update")})
             boards.append({"fighter_one": first, "fighter_two": second, "sportsbooks": books})
-        rows, covered = _odds_rows(boards, active, now, "The Odds API")
+        public_ids={str(f["fight_id"]) for f in active if any(
+            {f["fighter_a_id"],f["fighter_b_id"]}<={r["fighter_id"] for r in public_rows if str(r["fight_id"])==str(f["fight_id"]) and r["sportsbook_key"]==key}
+            for key in {r["sportsbook_key"] for r in public_rows if str(r["fight_id"])==str(f["fight_id"])})}
+        rows, covered = _odds_rows(boards,[f for f in active if str(f["fight_id"]) not in public_ids],now,"The Odds API")
+        rows=public_rows+rows;covered=public_covered+covered
         if not rows:
             raise SourceError("Neither odds source published matching moneylines for this event. Saved odds were kept.")
-        return {"rows": rows, "covered": covered, "total": len(active), "source": "The Odds API",
+        return {"rows": rows, "covered": covered, "total": len(active), "source": "FightOdds + The Odds API" if public_rows else "The Odds API",
                 "source_url": "https://the-odds-api.com", "checked_at": now.isoformat(),
                 "remaining": response.headers.get("x-requests-remaining")}
-    except SourceError:
-        raise
     except Exception:
+        if public_rows:
+            return {"rows":public_rows,"covered":public_covered,"total":len(active),"source":"FightOdds",
+                "source_url":odds_url,"checked_at":now.isoformat(),"warnings":["Backup odds unavailable; available public prices were retained."]}
         raise SourceError("The odds source could not be read. Saved prices were kept.") from None
     finally:
         session.close()

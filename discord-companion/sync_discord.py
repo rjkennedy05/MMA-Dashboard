@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import app analysis and seed weekly channels. Supabase reads only."""
+"""Import app analysis and weekly cards; coordinate publisher metadata."""
 from __future__ import annotations
 
 import argparse
@@ -23,6 +23,9 @@ from setup_discord import (APIError, DiscordAPI, NoRedirects, ROOT, SetupError,
                            overwrite_list, private_permissions, snowflake)
 from provider_runtime import EXPECTED_ACTIVE_PROMOTIONS, ARCHIVED_PROMOTIONS
 from bet_bridge import bet_payloads, fetch_bets
+from state_store import load_state, save_state
+from snapshot_merge import merge_external
+from database_snapshot import SnapshotReader,publisher_lease
 
 ALIASES = {
     "ufc": "ufc", "ultimate fighting championship": "ufc",
@@ -40,9 +43,9 @@ TABLE_IDS = {"events": "event_id", "fights": "fight_id", "odds": "odds_id",
              "bet_tickets": "ticket_id", "bet_legs": "leg_id"}
 ACTIVE_PROMOTIONS = frozenset(EXPECTED_ACTIVE_PROMOTIONS)
 RETIRED_PROMOTIONS = frozenset(ARCHIVED_PROMOTIONS)
-EVENT_COLUMNS = "event_id,event_name,event_date,event_start_time,event_status,watch_platform,city,state_region,country,updated_at,promotions(name)"
+EVENT_COLUMNS = "event_id,event_name,event_date,event_start_time,event_status,watch_platform,city,state_region,country,updated_at,card_observed_at,promotions(name)"
 FIGHT_COLUMNS = ("fight_id,event_id,fighter_a_id,fighter_b_id,fight_order,fight_status,"
-                 "ruleset,bout_type,winner_id,method,result_type,finish_round,finish_time_seconds,"
+                 "source_observed_at,result_confirmed_at,ruleset,bout_type,winner_id,method,result_type,finish_round,finish_time_seconds,"
                  "fighter_a:fighters!fights_fighter_a_id_fkey(fighter_id,full_name),"
                  "fighter_b:fighters!fights_fighter_b_id_fkey(fighter_id,full_name),weight_classes(name)")
 BIG_SWING = 0.05  # Five implied-probability percentage points since the last alert.
@@ -111,9 +114,16 @@ def status(value):
         return "completed"
     if value in {"cancelled", "canceled", "abandoned"}:
         return "cancelled"
+    if value == "unknown":return "unknown"
     if value == "postponed":
         return "postponed"
     return "scheduled"
+
+
+def final_bout(fight):
+    if status(fight.get("fight_status"))=="cancelled":return True
+    if normalized(fight.get("fight_status")) in {"draw","no contest"} or normalized(fight.get("result_type")) in {"draw","no contest"}:return True
+    return status(fight.get("fight_status"))=="completed" and fight.get("winner_id") is not None
 
 
 def read_env(path):
@@ -138,7 +148,7 @@ def local_config():
 
 
 class DatabaseReader:
-    """No write/RPC API is exposed. Keys stay in the existing api/.env file."""
+    """Restricted snapshots and publisher coordination; keys stay in local env files."""
     def __init__(self, dashboard):
         path = Path(dashboard).expanduser().resolve() / "api" / ".env"
         if not path.is_file():
@@ -147,7 +157,8 @@ class DatabaseReader:
         self.bet_owner_id = (read_env(ROOT / ".env").get("MMA_DASHBOARD_BET_OWNER_ID")
                              or os.environ.get("MMA_DASHBOARD_BET_OWNER_ID"))
         self.url = config.get("SUPABASE_URL", "").rstrip("/")
-        self.key = (config.get("SUPABASE_SECRET_KEY") or config.get("SUPABASE_SERVICE_KEY")
+        self.key = (read_env(ROOT / ".env").get("MMA_DISCORD_SUPABASE_KEY")
+                    or os.environ.get("MMA_DISCORD_SUPABASE_KEY") or config.get("SUPABASE_SECRET_KEY") or config.get("SUPABASE_SERVICE_KEY")
                     or config.get("SUPABASE_SERVICE_ROLE_KEY") or "")
         parsed = urlparse(self.url)
         if (parsed.scheme != "https" or not re.fullmatch(r"[a-z0-9-]+\.supabase\.co", parsed.hostname or "")
@@ -188,6 +199,17 @@ class DatabaseReader:
             collected.extend(page)
         raise SetupError(f"Database read exceeded the page limit for {table}; stopped before publishing incomplete data.")
 
+    def control_rpc(self,name,arguments):
+        if name not in {"mma_discord_snapshot","mma_discord_publisher"}:
+            raise SetupError("This bridge only accepts a snapshot read or publisher coordination.")
+        headers={"apikey":self.key,"Content-Type":"application/json","Accept":"application/json"}
+        if not self.key.startswith("sb_secret_"):headers["Authorization"]="Bearer "+self.key
+        request=Request(self.url+"/rest/v1/rpc/"+name,data=json.dumps(arguments).encode(),headers=headers,method="POST")
+        try:
+            with self.opener.open(request,timeout=30) as response: return json.loads(response.read())
+        except (HTTPError,URLError,TimeoutError,OSError):
+            raise SetupError("Dashboard snapshot/coordination was unavailable. Existing Discord information was kept; verify migrations 032–035 and retry after the import finishes.") from None
+
     def latest_daily_sync(self, now):
         """Return today's newest full daily refresh, ignoring scoped/manual maintenance."""
         if not now.tzinfo:
@@ -216,8 +238,15 @@ class DatabaseReader:
         while True:
             row = self.latest_daily_sync(now)
             state = normalized((row or {}).get("status"))
-            if state in {"success", "partial"}:
+            summary=(row or {}).get("summary") or {}
+            if isinstance(summary,str):
+                try: summary=json.loads(summary)
+                except ValueError: summary={}
+            ready=summary.get("publication_readiness") or {}
+            if state in {"success", "partial"} and row.get("finished_at") and summary.get("publishable") is True and ready.get("schema_version")==2 and ready.get("ready") is True:
                 return row
+            if state in {"success", "partial"}:
+                raise SetupError("Today's refresh did not verify all card sources. Discord kept its previous snapshot; run a full daily refresh with the matching dashboard release.")
             if state == "failed":
                 raise SetupError("Today's dashboard refresh failed. Discord kept its previous snapshot and will retry in one hour.")
             if time.monotonic() >= deadline:
@@ -233,6 +262,11 @@ def batches(values, size=80):
 
 def fetch_data(reader, now, previous):
     start, end = week_window(now)
+    if isinstance(reader,DatabaseReader):
+        pending=[int(eid) for eid,item in previous.get("events",{}).items() if not item.get("archived")]
+        tables=reader.control_rpc("mma_discord_snapshot",{"p_start":(start-timedelta(days=2)).isoformat(),
+            "p_end":(end+timedelta(days=2)).isoformat(),"p_pending":pending})
+        reader=SnapshotReader(tables,reader.bet_owner_id)
     events = reader.rows("events", [("select", EVENT_COLUMNS),
         ("event_date", "gte." + (start - timedelta(days=2)).isoformat()),
         ("event_date", "lt." + (end + timedelta(days=2)).isoformat())])
@@ -694,7 +728,7 @@ def payload_matches(message, payload):
 class Publisher:
     def __init__(self, api, setup, state_path):
         self.api, self.setup, self.path = api, setup, state_path
-        self.state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"guild_id": setup["guild_id"], "events": {}, "posts": {}}
+        self.state = load_state(state_path,{"guild_id": setup["guild_id"], "events": {}, "posts": {}})
         if self.state["guild_id"] != setup["guild_id"]:
             raise SetupError("The Discord sync state belongs to a different server.")
         self.bot = str(api.request("GET", "/users/@me")["id"])
@@ -714,6 +748,10 @@ class Publisher:
                     or not private_permissions(channel, setup["guild_id"], self.bot)):
                 raise SetupError("A saved promotion or index channel no longer has the expected private settings.")
 
+    def mutate(self,method,route,payload=None):
+        getattr(self,"ensure_publisher",lambda:None)()
+        return self.api.request(method,route,payload)
+
     def channel(self, channel_id):
         found = next((c for c in self.channels if c["id"] == channel_id), None)
         if not found:
@@ -721,16 +759,22 @@ class Publisher:
         return found
 
     def save(self):
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(self.state, indent=2, ensure_ascii=False), encoding="utf-8")
-        temporary.replace(self.path)
+        save_state(self.path,self.state)
 
     def recent_messages(self, channel_id):
         if channel_id not in self.recent:
-            self.recent[channel_id] = self.api.request("GET", f"/channels/{channel_id}/messages?limit=100")
+            messages=[]; before=None
+            for _ in range(20):
+                route=f"/channels/{channel_id}/messages?limit=100"+(f"&before={before}" if before else "")
+                page=self.api.request("GET",route)
+                if not page:break
+                messages.extend(page);before=page[-1]["id"]
+                if len(page)<100:break
+            self.recent[channel_id]=messages
         return self.recent[channel_id]
 
     def post(self, key, channel_id, payload, *, pinned=False, seed=None, preserve=False):
+        getattr(self,"ensure_publisher",lambda:None)()
         saved = self.state["posts"].get(key)
         digest = fingerprint(payload)
         message_id = saved["id"] if saved else seed
@@ -745,28 +789,37 @@ class Publisher:
             raise SetupError("A saved message is not owned by this bot; it will not be changed.")
         if message and preserve and saved:
             if pinned and not message.get("pinned"):
-                self.api.request("PUT", f"/channels/{channel_id}/messages/pins/{message['id']}")
+                self.mutate("PUT", f"/channels/{channel_id}/messages/pins/{message['id']}")
             return message["id"]
+        pending=self.state.setdefault("pending_posts",{}).get(key)
+        if not message and pending:
+            message=next((m for m in self.recent_messages(channel_id) if str(m["author"]["id"])==self.bot and payload_matches(m,pending["payload"])),None)
         if not message:
             message = next((m for m in self.recent_messages(channel_id) if str(m["author"]["id"]) == self.bot
                             and payload_matches(m, payload)), None)
         body = dict(payload, allowed_mentions={"parse": []})
         if message:
             if not payload_matches(message, payload):
-                message = self.api.request("PATCH", f"/channels/{channel_id}/messages/{message['id']}", body)
+                message = self.mutate("PATCH", f"/channels/{channel_id}/messages/{message['id']}", body)
         else:
-            body.update(nonce=fingerprint([self.setup["guild_id"], key, digest])[:24], enforce_nonce=True)
-            message = self.api.request("POST", f"/channels/{channel_id}/messages", body)
+            intent=(pending or {}).get("payload") or payload
+            self.state["pending_posts"][key]={"channel_id":channel_id,"payload":intent}
+            self.save()
+            outgoing=dict(intent,allowed_mentions={"parse":[]},nonce=fingerprint([self.setup["guild_id"],key])[:24],enforce_nonce=True)
+            message=self.mutate("POST",f"/channels/{channel_id}/messages",outgoing)
+            if not payload_matches(message,payload):message=self.mutate("PATCH",f"/channels/{channel_id}/messages/{message['id']}",body)
             self.recent_messages(channel_id).insert(0, message)
+        self.state["pending_posts"].pop(key,None)
         self.state["posts"][key] = {"id": message["id"], "hash": digest, "channel_id": channel_id}
         self.save()
         if pinned and not message.get("pinned"):
-            self.api.request("PUT", f"/channels/{channel_id}/messages/pins/{message['id']}")
+            self.mutate("PUT", f"/channels/{channel_id}/messages/pins/{message['id']}")
         return message["id"]
 
     def remove_display_post(self, key):
+        getattr(self,"ensure_publisher",lambda:None)()
         """Remove a redundant generated display chunk after keeping a local copy."""
-        if not re.fullmatch(r"(?:research:[0-9]+:[a-f0-9]{20}|event:[0-9]+:(?:card|bets)|weekly-index|archive-index):[0-9]+", key):
+        if not re.fullmatch(r"(?:research:[0-9]+:(?:[a-f0-9]{20}|current)|event:[0-9]+:(?:card|bets)|weekly-index|archive-index):[0-9]+", key):
             raise SetupError("Cleanup is limited to generated card, bet, research and index chunks.")
         saved = self.state["posts"][key]
         try:
@@ -782,7 +835,7 @@ class Publisher:
                 "channel_id": saved["channel_id"], "content": message.get("content", ""),
                 "embeds": message.get("embeds", []), "pinned": message.get("pinned", False)})
             self.save()
-            self.api.request("DELETE", f"/channels/{saved['channel_id']}/messages/{saved['id']}")
+            self.mutate("DELETE", f"/channels/{saved['channel_id']}/messages/{saved['id']}")
             if saved["channel_id"] in self.recent:
                 self.recent[saved["channel_id"]][:] = [m for m in self.recent[saved["channel_id"]] if m["id"] != saved["id"]]
         del self.state["posts"][key]
@@ -803,6 +856,7 @@ class Publisher:
                 self.post(candidate, channel_id, {"content": "This section was updated. See its current first message.", "embeds": []})
 
     def event_channel(self, event):
+        getattr(self,"ensure_publisher",lambda:None)()
         eid = str(event["event_id"])
         saved = self.state["events"].get(eid)
         channel = self.channel(saved["channel_id"]) if saved else None
@@ -813,7 +867,7 @@ class Publisher:
                 raise SetupError("Multiple channels match this event; resolve the duplicate before syncing.")
             channel = matches[0] if matches else None
         if not channel:
-            channel = self.api.request("POST", f"/guilds/{self.setup['guild_id']}/channels", {
+            channel = self.mutate("POST", f"/guilds/{self.setup['guild_id']}/channels", {
                 "name": event_slug(event), "type": 0, "topic": event_topic(event),
                 "parent_id": self.setup["channels"]["upcoming"],
                 "permission_overwrites": overwrite_list(self.setup["guild_id"], self.bot)})
@@ -826,8 +880,9 @@ class Publisher:
         return channel
 
     def move(self, channel, destination):
+        getattr(self,"ensure_publisher",lambda:None)()
         if channel.get("parent_id") != destination:
-            self.api.request("PATCH", f"/channels/{channel['id']}", {"parent_id": destination})
+            self.mutate("PATCH", f"/channels/{channel['id']}", {"parent_id": destination})
             channel["parent_id"] = destination
 
     def archive_destination(self):
@@ -837,7 +892,7 @@ class Publisher:
                 raise SetupError("An archive category has unexpected permissions.")
             if sum(c.get("parent_id") == category_id for c in self.channels) < 49:
                 return category_id
-        category = self.api.request("POST", f"/guilds/{self.setup['guild_id']}/channels", {
+        category = self.mutate("POST", f"/guilds/{self.setup['guild_id']}/channels", {
             "name": "🗄️ ARCHIVED EVENTS " + str(len(self.state["archive_categories"]) + 1), "type": 4,
             "permission_overwrites": overwrite_list(self.setup["guild_id"], self.bot)})
         self.channels.append(category)
@@ -847,12 +902,22 @@ class Publisher:
 
 
 def publish_research(publisher, event, analysis, channel_id=None, key=None):
-    key = key or "research:" + str(event["event_id"]) + ":" + fingerprint(analysis)[:20]
+    key = key or "research:" + str(event["event_id"]) + ":current"
     sources = publisher.state.setdefault("research_sources", {})
-    sources.setdefault(key, {"event": event, "analysis": analysis})
+    previous=sources.get(key)
+    if previous and previous.get("analysis")!=analysis:
+        publisher.state.setdefault("research_revisions",{}).setdefault(str(event["event_id"]),{})[fingerprint(previous["analysis"])]=previous
+    sources[key] = {"event": event, "analysis": analysis}
     publisher.save()  # Preserve the source before changing any existing chunks.
     channel_id = channel_id or publisher.setup["channels"][promotion(event)]
     publisher.block(key, channel_id, research_payloads(event, analysis), prune=True)
+    if key.endswith(":current"):
+        prefix="research:"+str(event["event_id"])+":"
+        current_ids={saved["id"] for post,saved in publisher.state["posts"].items() if post.startswith(key+":")}
+        for old in list(publisher.state["posts"]):
+            if old.startswith(prefix) and not old.startswith(key+":"):
+                if publisher.state["posts"][old]["id"] in current_ids:del publisher.state["posts"][old]
+                else:publisher.remove_display_post(old)
     publisher.state.setdefault("research_display", {})[key] = 3
     publisher.save()
 
@@ -894,22 +959,7 @@ def migrate_research_display(publisher, event_ids):
 
 
 def apply_external_data(data, state):
-    """A daily app snapshot cannot overwrite a confirmed direct observation."""
-    merged = deepcopy(data)
-    for event in merged["events"]:
-        item = state.get("events", {}).get(str(event["event_id"]), {})
-        external = item.get("external_card")
-        if external:
-            event.update(external["event"])
-            eid = str(event["event_id"])
-            merged["fights"] = [f for f in merged["fights"] if str(f["event_id"]) != eid] + deepcopy(external["fights"])
-            if merged.get("links") is not None and external.get("source_url"):
-                merged["links"].append({"internal_id": event["event_id"], "external_url": external["source_url"]})
-        if item.get("direct_odds"):
-            ids = {str(f["fight_id"]) for f in item.get("fights", []) + item.get("seed_fights", [])}
-            if merged.get("odds") is not None:
-                merged["odds"] = [r for r in merged["odds"] if str(r["fight_id"]) not in ids] + deepcopy(item["direct_odds"])
-    return merged
+    return merge_external(data,state)
 
 
 def publish_bets(publisher, eid, channel_id, records):
@@ -1039,7 +1089,9 @@ def publish_cycle(publisher, data, now, overrides=None):
             continue
         event = events[eid]
         day = local_day(event)
-        if day and day < start and status(event.get("event_status")) != "live":
+        event_fights=[f for f in data["fights"] if str(f["event_id"])==eid]
+        resolved=bool(event_fights) and all(final_bout(f) for f in event_fights)
+        if day and day < start and resolved and status(event.get("event_status")) in {"completed", "cancelled"}:
             channel = publisher.channel(item["channel_id"])
             publisher.move(channel, publisher.archive_destination())
             item.update(archived=True, event=event)
@@ -1065,7 +1117,7 @@ def publish_cycle(publisher, data, now, overrides=None):
                     pin_first=True, seed=publisher.setup["messages"].get("this-week"), prune=True)
     archived = sorted([item for item in publisher.state["events"].values() if item.get("archived")],
                       key=lambda item: item["event"].get("event_date") or "", reverse=True)
-    archive_fields = [{"name": item["event"]["event_name"], "value": f"{local_day(item['event']) or 'Date TBA'} • <#{item['channel_id']}>"} for item in archived[:40]]
+    archive_fields = [{"name": item["event"]["event_name"], "value": f"{local_day(item['event']) or 'Date TBA'} • <#{item['channel_id']}>"} for item in archived]
     if not archive_fields:
         archive_fields = [{"name": "Archive ready", "value": "Past event channels will appear here after the weekly rollover."}]
     publisher.block("archive-index", publisher.setup["channels"]["archive-index"],
@@ -1073,7 +1125,7 @@ def publish_cycle(publisher, data, now, overrides=None):
                     pin_first=True, seed=publisher.setup["messages"].get("archive-index"), prune=True)
     publisher.state["last_success"] = now.isoformat()
     publisher.save()
-    print(f"Synced {len(active)} weekly events; {len(archived)} event channels archived. No database writes.")
+    print(f"Synced {len(active)} weekly events; {len(archived)} event channels archived.")
     for warning in data.get("warnings", []):
         print("Note: " + warning)
 
@@ -1133,7 +1185,9 @@ def main():
     overrides_path = ROOT / "event-overrides.json"
     with sync_lock():
         now = datetime.now(timezone.utc)
-        previous = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        previous = load_state(path)
+        if not args.preview:
+            reader.wait_for_daily_sync(now)
         data = fetch_data(reader, now, previous)
         if args.preview:
             start, end = week_window(now)
@@ -1144,7 +1198,9 @@ def main():
             print("No Discord changes were made.")
             return
         overrides = json.loads(overrides_path.read_text(encoding="utf-8")) if overrides_path.exists() else {}
-        publish_cycle(Publisher(api, setup, path), data, now, overrides)
+        with publisher_lease(reader,setup["guild_id"]) as ensure:
+            publisher=Publisher(api,setup,path);publisher.ensure_publisher=ensure
+            publish_cycle(publisher,data,now,overrides)
 
 
 if __name__ == "__main__":

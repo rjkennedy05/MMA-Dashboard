@@ -1,0 +1,8 @@
+# Matching dashboard and Discord runtime, tested with Python 3.12.
+beautifulsoup4==4.15.0
+playwright==1.63.0
+python-dotenv==1.2.4
+requests==2.34.2
+supabase==2.32.0
+tzdata==2026.5
+discord.py==2.7.1

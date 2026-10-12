@@ -13,6 +13,7 @@ for root in (API_ROOT, UFCSTATS_ROOT):
         sys.path.insert(0, str(root))
 
 from uploader import supabase  # noqa: E402
+from providers.errors import safe_error
 from providers.the_odds_api.import_one_matchup import import_moneylines  # noqa: E402
 
 from .client import FightOddsClient
@@ -144,7 +145,7 @@ def import_fightodds_odds(target_cards: list[dict[str, Any]]) -> dict[str, Any]:
                 metrics["review_sample"].append({
                     "event": card.get("event_name"),
                     "status": "failed",
-                    "reason": str(error),
+                    "reason": safe_error(error),
                 })
                 continue
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
+from api.tests.fakes import rpc as fake_rpc
 
 try:
     from .importer import UfcImporter, fighter_name_key
@@ -91,6 +93,8 @@ class FakeQuery:
 
 
 class FakeSupabase:
+    rpc = fake_rpc
+
     def __init__(self, fighters, tables=None):
         self.rows = {
             "fighters": list(fighters),
@@ -333,7 +337,7 @@ class UfcImporterRoutingTests(unittest.TestCase):
 
         self.assertEqual(fight_id, 10)
 
-    def test_import_moves_provider_mapping_to_preserved_matchup_row(self) -> None:
+    def test_import_refuses_to_move_a_provider_mapping_between_historical_rows(self) -> None:
         importer = UfcImporter.__new__(UfcImporter)
         importer.source_id = 7
         importer.promotion_label = "UFC"
@@ -380,41 +384,33 @@ class UfcImporterRoutingTests(unittest.TestCase):
         )
         importer._weight_class_id = lambda _name: None
 
-        result = importer.import_fight(
-            event_id=5,
-            fight={
-                "id": "provider-current-id",
-                "matchNumber": 3,
-                "competitors": [
-                    {
-                        "order": 1,
-                        "athlete": {
-                            "id": "athlete-a",
-                            "displayName": "Jose Silva",
+        before=deepcopy(importer.supabase.rows)
+        with self.assertRaisesRegex(RuntimeError,"mapped identity"):
+            importer.import_fight(
+                event_id=5,
+                fight={
+                    "id": "provider-current-id",
+                    "matchNumber": 3,
+                    "competitors": [
+                        {
+                            "order": 1,
+                            "athlete": {
+                                "id": "athlete-a",
+                                "displayName": "Jose Silva",
+                            },
                         },
-                    },
-                    {
-                        "order": 2,
-                        "athlete": {
-                            "id": "athlete-b",
-                            "displayName": "John Smith",
+                        {
+                            "order": 2,
+                            "athlete": {
+                                "id": "athlete-b",
+                                "displayName": "John Smith",
+                            },
                         },
-                    },
-                ],
-            },
-            fight_order=3,
-        )
-
-        self.assertEqual(result["fight_id"], 10)
-        self.assertEqual(
-            importer.supabase.rows["external_ids"][0]["internal_id"],
-            10,
-        )
-        preserved = next(
-            row for row in importer.supabase.rows["fights"]
-            if row["fight_id"] == 10
-        )
-        self.assertEqual(preserved["fight_order"], 3)
+                    ],
+                },
+                fight_order=3,
+            )
+        self.assertEqual(importer.supabase.rows,before)
 
 
 if __name__ == "__main__":

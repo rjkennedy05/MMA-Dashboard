@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
+from state_store import load_state,save_state
+from database_snapshot import publisher_lease
 import sys
 
 from setup_discord import DiscordAPI, ROOT, SetupError
@@ -18,7 +20,7 @@ from direct_sources import SourceError, fetch_fight_card, fetch_odds
 from provider_runtime import ARCHIVED_PROMOTIONS, configure_provider_core
 
 COOLDOWN = 60
-RUNNER_VERSION = "6.1"
+RUNNER_VERSION = "6.2"
 
 
 def daily_slot(now, hour=8, minute=0):
@@ -54,12 +56,12 @@ class EventService:
         self.overrides_path = overrides_path or ROOT / "event-overrides.json"
 
     def publisher(self):
-        return Publisher(self.api, self.setup, self.path)
+        publisher=Publisher(self.api,self.setup,self.path)
+        publisher.ensure_publisher=getattr(self,"ensure_publisher",lambda:None)
+        return publisher
 
     def state(self):
-        if not self.path.exists():
-            return {"events": {}}
-        return json.loads(self.path.read_text(encoding="utf-8"))
+        return load_state(self.path,{"events":{}})
 
     def overrides(self, eid):
         if not self.overrides_path.exists():
@@ -89,7 +91,13 @@ class EventService:
         publisher.save()
         return item
 
-    def refresh(self, guild_id, channel_id, command, now=None):
+    def refresh(self,guild_id,channel_id,command,now=None):
+        with publisher_lease(DatabaseReader(self.dashboard),self.setup["guild_id"]) as ensure:
+            self.ensure_publisher=ensure
+            try: return self.refresh_owned(guild_id,channel_id,command,now)
+            finally: self.ensure_publisher=lambda:None
+
+    def refresh_owned(self, guild_id, channel_id, command, now=None):
         now = now or datetime.now(timezone.utc)
         eid = self.resolve(guild_id, channel_id)
         publisher = self.publisher()
@@ -147,6 +155,9 @@ class EventService:
     def due(self, job, now):
         if job != "app":
             return False
+        local=now.astimezone(chicago())
+        if (local.hour,local.minute)<(self.options["app_hour"],self.options["app_minute"]):
+            return False
         state = self.state()
         runner = state.get("runner", {})
         retry = parsed_time(runner.get("app_retry_at"))
@@ -169,26 +180,33 @@ class EventService:
             runner[job + "_retry_at"] = (now + timedelta(hours=1)).isoformat()
         publisher.save()
 
-    def sync_app(self, now=None):
+    def prepare_app(self,now):
+        reader=DatabaseReader(self.dashboard)
+        return reader.wait_for_daily_sync(now)
+
+    def sync_app(self,now=None,completed=None):
+        completed=completed or self.prepare_app(now or datetime.now(timezone.utc))
+        with publisher_lease(DatabaseReader(self.dashboard),self.setup["guild_id"]) as ensure:
+            self.ensure_publisher=ensure
+            try: return self.sync_app_owned(now,completed)
+            finally: self.ensure_publisher=lambda:None
+
+    def sync_app_owned(self, now=None, completed=None):
         now = now or datetime.now(timezone.utc)
-        previous = self.state()
-        reader = DatabaseReader(self.dashboard)
-        completed = reader.wait_for_daily_sync(now)
-        data = fetch_data(reader, now, previous)
-        publisher = self.publisher()
-        overrides = json.loads(self.overrides_path.read_text(encoding="utf-8")) if self.overrides_path.exists() else {}
-        publish_cycle(publisher, data, now, overrides)
-        self.mark(publisher, "app", now, True)
-        suffix = " (dashboard refresh finished with review items)" if completed.get("status") == "partial" else ""
-        print("Daily app sync complete. This week's notes and event cards updated." + suffix)
+        completed=completed or self.prepare_app(now)
+        previous=self.state()  # Commands may have updated state while the daily job waited.
+        data=fetch_data(DatabaseReader(self.dashboard),now,previous)
+        publisher=self.publisher()
+        overrides=json.loads(self.overrides_path.read_text(encoding="utf-8")) if self.overrides_path.exists() else {}
+        publish_cycle(publisher,data,now,overrides)
+        self.mark(publisher,"app",now,True)
+        print("Daily app sync complete. This week's notes and event cards updated.")
 
     def failed_job(self, job, now):
         # This must still work while Discord REST is unavailable.
         state = self.state()
         state.setdefault("runner", {})[job + "_retry_at"] = (now + timedelta(hours=1)).isoformat()
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-        temporary.replace(self.path)
+        save_state(self.path,state)
 
 
 def make_client(service, token):
@@ -262,19 +280,20 @@ def make_client(service, token):
         async def daily_loop(self):
             await self.wait_until_ready()
             while not self.is_closed():
-                for job, action in (("app", service.sync_app),):
-                    now = datetime.now(timezone.utc)
-                    async with self.work:
-                        try:
-                            if service.due(job, now):
-                                await asyncio.to_thread(action, now)
-                        except Exception as error:
-                            detail = str(error) if isinstance(error, SetupError) else "Saved information was kept."
-                            print(job.title() + " check stopped: " + detail + " Retrying in one hour.")
-                            try:
-                                await asyncio.to_thread(service.failed_job, job, now)
-                            except Exception:
-                                print("The retry time could not be saved. Check that this folder is writable.")
+                now=datetime.now(timezone.utc)
+                try:
+                    if await asyncio.to_thread(service.due,"app",now):
+                        completed=await asyncio.to_thread(service.prepare_app,now)
+                        async with self.work:
+                            await asyncio.to_thread(service.sync_app,datetime.now(timezone.utc),completed)
+                except Exception as error:
+                    detail=str(error) if isinstance(error,SetupError) else "Saved information was kept."
+                    print("App check stopped: "+detail+" Retrying in one hour.")
+                    try:
+                        async with self.work:
+                            await asyncio.to_thread(service.failed_job,"app",now)
+                    except Exception:
+                        print("The retry time could not be saved. Check that this folder is writable.")
                 # Only the local clock/state is checked here; no database/source requests.
                 await asyncio.sleep(30)
 

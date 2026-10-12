@@ -121,12 +121,12 @@ def fetch_bets(reader, event_ids, owner_id=None):
     tickets = {}
     for batch in chunks(candidates):
         query = [("select", TICKET_SELECT), ("ticket_id", "in.(" + ",".join(batch) + ")"),
-                 ("ticket_type", "eq.parlay"), ("archived_at", "is.null"), ("stake_units", "gt.0")]
+                 ("ticket_type", "in.(single,parlay)"), ("archived_at", "is.null"), ("stake_units", "gt.0")]
         if owner_id:
             query.append(("owner_id", "eq." + owner_id))
         for row in reader.rows("bet_tickets", query):
             row = bet_row(row)
-            if row.get("archived_at") or row.get("ticket_type") != "parlay" or not amount(row.get("stake_units")):
+            if row.get("archived_at") or row.get("ticket_type") not in {"single","parlay"} or not amount(row.get("stake_units")):
                 continue
             current_owner = owner_identifier(row.get("owner_id"))
             if not current_owner:
@@ -163,7 +163,7 @@ def fetch_bets(reader, event_ids, owner_id=None):
         if price is None:
             raise SetupError("A recorded parlay has no valid accepted price. Existing My Bets was kept.")
         legs = row.get("bet_legs")
-        if not isinstance(legs, list) or len(legs) < 2:
+        if not isinstance(legs,list) or len(legs)<(1 if row.get("ticket_type")=="single" else 2):
             raise SetupError("A recorded parlay has incomplete legs. Existing My Bets was kept.")
         ordered = []
         for leg in legs:
@@ -177,6 +177,13 @@ def fetch_bets(reader, event_ids, owner_id=None):
         ordered.sort(key=lambda leg: (leg["order"], int(leg["fight_id"])))
         if len({leg["fight_id"] for leg in ordered}) != len(ordered) or len({leg["order"] for leg in ordered}) != len(ordered):
             raise SetupError("A recorded parlay has conflicting legs. Existing My Bets was kept.")
+        if row.get("ticket_type")=="single":
+            leg=ordered[0]
+            if leg["event_id"] in wanted:
+                panels[leg["event_id"]].append({"bet_id":"ticket:"+tid,"type":"single","stake":amount(row["stake_units"]),
+                    "price":price,"sportsbook":str(row.get("bet_sportsbook") or "Book not recorded"),
+                    "selection":leg["selection"],"fight_id":leg["fight_id"]})
+            continue
         ticket = {"bet_id": "parlay:" + tid, "type": "parlay", "stake": amount(row["stake_units"]),
                   "price": price, "sportsbook": str(row.get("bet_sportsbook") or "Book not recorded").strip(),
                   "label": str(row.get("ticket_label") or "").strip(), "legs": ordered}

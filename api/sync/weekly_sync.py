@@ -9,6 +9,8 @@ import time
 import traceback
 from contextlib import ExitStack
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +53,8 @@ from fight_stats_scraper import (  # noqa: E402
 from fight_scraper import get_fights_from_event  # noqa: E402
 from page_reader import UfcstatsPageReader  # noqa: E402
 from scraper import get_events  # noqa: E402
-from uploader import import_event, supabase  # noqa: E402
+from uploader import import_event, supabase, get_ufcstats_source_id
+from providers.persistence import save_rows  # noqa: E402
 from providers.espn_mma.client import (  # noqa: E402
     EspnMmaClient,
     EspnMmaNoFightCardError,
@@ -114,6 +117,11 @@ from providers.api_sports_mma.client import (  # noqa: E402
 )
 from providers.event_catalog.sync import sync_official_catalogs  # noqa: E402
 from providers.manifest import active_promotions  # noqa: E402
+from sync.cards import process_cards
+from sync.lease import SyncLease, ImportBusyError
+from sync.readiness import resolve_scope, finalize_readiness
+from providers.errors import safe_error
+from providers.event_catalog.importer import event_match_score
 from sync.data_quality import audit_upcoming_coverage  # noqa: E402
 from sync.freshness import EventFreshnessCache  # noqa: E402
 from sync.incremental import (  # noqa: E402
@@ -323,8 +331,8 @@ def add_error(
     summary["errors"].append(
         {
             "stage": stage,
-            "message": message,
-            "context": context,
+            "message": safe_error(message),
+            "context": safe_error(context),
         }
     )
 
@@ -335,7 +343,7 @@ def sync_ufcstats(
 ) -> None:
     provider_run = summary["provider_runs"]["ufcstats"]
     provider_run["status"] = "running"
-    today = date.today()
+    today = datetime.now(ZoneInfo("America/Chicago")).date()
     events = get_events(headless=not args.show_browser)
     summary["events_seen"] += len(events)
 
@@ -380,7 +388,7 @@ def sync_ufcstats(
         f"{future_events_skipped} future schedule event(s) skipped\n"
     )
 
-    state = None if args.dry_run else UfcstatsSyncState.load(supabase)
+    state = None if args.dry_run else UfcstatsSyncState.load(supabase,get_ufcstats_source_id())
 
     with ExitStack() as stack:
         page_reader: UfcstatsPageReader | None = None
@@ -409,10 +417,10 @@ def sync_ufcstats(
                 add_error(
                     summary,
                     stage="event_import",
-                    message=str(error),
+                    message=safe_error(error),
                     context=event_label,
                 )
-                print(f"  EVENT FAILED — {error}")
+                print(f"  EVENT FAILED — {safe_error(error)}")
                 continue
 
             try:
@@ -422,10 +430,10 @@ def sync_ufcstats(
                 add_error(
                     summary,
                     stage="fight_list",
-                    message=str(error),
+                    message=safe_error(error),
                     context=event_label,
                 )
-                print(f"  FIGHT LIST FAILED — {error}")
+                print(f"  FIGHT LIST FAILED — {safe_error(error)}")
                 continue
 
             if args.dry_run:
@@ -498,10 +506,10 @@ def sync_ufcstats(
                     add_error(
                         summary,
                         stage="fight_import",
-                        message=str(error),
+                        message=safe_error(error),
                         context=f"{event_label}: {matchup}",
                     )
-                    print(f"  FIGHT FAILED — {matchup}: {error}")
+                    print(f"  FIGHT FAILED — {matchup}: {safe_error(error)}")
                     continue
 
                 if args.skip_stats or fight_status not in OFFICIAL_RESULT_STATUSES:
@@ -519,759 +527,153 @@ def sync_ufcstats(
                     )
                 except UfcstatsStatsUnavailableError as error:
                     provider_counts["stats_unavailable"] += 1
-                    print(f"  STATS PENDING — {matchup}: {error}")
+                    print(f"  STATS PENDING — {matchup}: {safe_error(error)}")
                 except Exception as error:
                     add_error(
                         summary,
                         stage="stats_import",
-                        message=str(error),
+                        message=safe_error(error),
                         context=f"{event_label}: {matchup}",
                     )
-                    print(f"  STATS FAILED — {matchup}: {error}")
+                    print(f"  STATS FAILED — {matchup}: {safe_error(error)}")
 
     provider_run.update(provider_counts)
     provider_run["status"] = "completed"
 
 
-def sync_ufc(
-    args: argparse.Namespace,
-    summary: dict[str, Any],
-) -> None:
-    provider_run = summary["provider_runs"]["espn_ufc"]
-
+def sync_ufc(args, summary):
     if args.skip_ufc:
-        provider_run["status"] = "skipped"
+        summary["provider_runs"]["espn_ufc"]["status"] = "skipped"
         return
-
     client = EspnMmaClient(league="ufc")
-    provider_run["status"] = "running"
-    today = date.today()
-    window_start = today - timedelta(days=args.past_days)
-    window_end = today + timedelta(days=args.future_days)
-    all_events = client.get_events_in_window(window_start, window_end)
-    events = [
-        event
-        for event in all_events
-        if event_in_window(event, window_start, window_end)
-    ]
-    events.sort(key=lambda event: (event.get("date") or "", event_name(event)))
-    importer = UfcImporter(supabase)
-
-    summary["events_seen"] += len(all_events)
-    summary["events_in_window"] += len(events)
-    provider_counts = {
-        "events": len(events),
-        "fights": 0,
-        "results": 0,
-        "requests": 0,
-        "event_errors": 0,
-        "card_changes_archived": 0,
-        "fight_errors": 0,
-        "placeholder_fights_skipped": 0,
-        "cardless_events_skipped": 0,
-        "events_skipped_fresh": 0,
-        "transient_retries": 0,
-    }
-
-    def retry_database_operation(operation, label):
-        def prepare_retry(_attempt, _error):
-            provider_counts["transient_retries"] += 1
-            importer.clear_lookup_caches()
-
-        return run_with_transient_retry(
-            operation,
-            label=label,
-            on_retry=prepare_retry,
-        )
-
-    print(
-        "\nESPN UFC/DWCS events in sync window: "
-        f"{len(events)} of {len(all_events)} "
-        f"(source: {client.event_source})\n"
-    )
-
-    for event_index, event in enumerate(events, start=1):
-        name = event_name(event)
-        print(f"[UFC/DWCS {event_index}/{len(events)}] {name}")
-        if not should_refresh_listing(args, "espn_ufc", event):
-            provider_counts["events_skipped_fresh"] += 1
-            print("  FRESH — unchanged distant card checked within three days")
-            continue
+    today = datetime.now(ZoneInfo("America/Chicago")).date()
+    start, end = today-timedelta(days=args.past_days), today+timedelta(days=args.future_days)
+    all_events = client.get_events_in_window(start, end)
+    expected = [row for row in (summary["provider_runs"].get("official_catalog", {}).get("entries") or [])
+                if row["promotion_key"] in ("ufc", "dwcs") and start.isoformat() <= row["date"] <= end.isoformat()]
+    def missing(rows):
+        return [entry for entry in expected if not any(
+            abs((date.fromisoformat(entry["date"])-parse_event_date(row)).days) <= 1
+            and event_match_score(entry["name"], event_name(row)) >= 0.64
+            for row in rows if parse_event_date(row))]
+    if missing(all_events):
         try:
-            fightcenter = client.get_fightcenter(str(event["id"]))
-            fights = event_fights(event, fightcenter)
-            summary["fights_seen"] += len(fights)
-            provider_counts["fights"] += len(fights)
-
-            event_result = retry_database_operation(
-                lambda: importer.import_event(
-                    event=event,
-                    dry_run=args.dry_run,
-                ),
-                f"event {name}",
-            )
-        except EspnMmaNoFightCardError:
-            provider_counts["cardless_events_skipped"] += 1
-            mark_listing_refreshed(args, "espn_ufc", event)
-            print("  CARDLESS LISTING SKIPPED — no ESPN fight competitions")
-            continue
+            supplemental = client._get_core_events(start, end)
+            all_events = list({str(row["id"]): row for row in [*all_events,*supplemental]}.values())
         except Exception as error:
-            provider_counts["event_errors"] += 1
-            add_error(
-                summary,
-                stage="espn_ufc_event_sync",
-                message=str(error),
-                context=name,
-            )
-            print(f"  UFC/DWCS EVENT FAILED — {error}")
-            continue
-        if event_result["status"] == "imported":
-            summary["events_imported"] += 1
-        elif event_result["status"] == "updated":
-            summary["events_updated"] += 1
-
-        if args.dry_run:
-            for fight in fights:
-                if normalized_status(fight) in OFFICIAL_RESULT_STATUSES:
-                    summary["official_results_found"] += 1
-                    provider_counts["results"] += 1
-            target = event_result.get("event_id") or "new row"
-            print(
-                "  DRY RUN — "
-                f"{event_result.get('action', 'review')} {target}; "
-                f"found {len(fights)} fights"
-            )
-            continue
-
-        event_id = int(event_result["event_id"])
-        active_fight_ids: list[int] = []
-        event_fight_errors_before = provider_counts["fight_errors"]
-        card_has_placeholder = False
-        for fight_order, fight in enumerate(fights, start=1):
-            matchup = espn_matchup_label(fight)
-            try:
-                fight_result = retry_database_operation(
-                    lambda: importer.import_fight(
-                        event_id=event_id,
-                        fight=fight,
-                        fight_order=fight_order,
-                    ),
-                    f"fight {matchup}",
-                )
-                if fight_result["status"] == "imported":
-                    summary["fights_imported"] += 1
-                elif fight_result["status"] == "updated":
-                    summary["fights_updated"] += 1
-                elif fight_result["status"] == "skipped_placeholder":
-                    provider_counts["placeholder_fights_skipped"] += 1
-                    card_has_placeholder = True
-                    print(f"  PLACEHOLDER SKIPPED — {matchup}")
-
-                if fight_result.get("fight_id") is not None:
-                    active_fight_ids.append(int(fight_result["fight_id"]))
-
-                if fight_result["fight_status"] in OFFICIAL_RESULT_STATUSES:
-                    summary["official_results_found"] += 1
-                    provider_counts["results"] += 1
-            except Exception as error:
-                provider_counts["fight_errors"] += 1
-                add_error(
-                    summary,
-                    stage="espn_ufc_fight_sync",
-                    message=str(error),
-                    context=f"{name}: {matchup}",
-                )
-                print(f"  UFC/DWCS FIGHT FAILED — {matchup}: {error}")
-
-        if (
-            active_fight_ids
-            and not card_has_placeholder
-            and provider_counts["fight_errors"] == event_fight_errors_before
-        ):
-            archived = archive_upcoming_card_changes(
-                event, today, event_id, active_fight_ids
-            )
-            provider_counts["card_changes_archived"] += len(archived)
-            if archived:
-                print(f"  CARD CHANGES — archived {len(archived)} removed matchup(s)")
-        mark_listing_refreshed(args, "espn_ufc", event)
-
-    provider_counts["requests"] = client.request_count
-    provider_counts["source"] = client.event_source
-    provider_counts["fightcenter_fallbacks"] = (
-        client.fightcenter_fallbacks
-    )
-    provider_run.update(provider_counts)
-    provider_run["status"] = (
-        "partial"
-        if provider_counts["event_errors"] or provider_counts["fight_errors"]
-        else "completed"
-    )
-    summary["providers"]["ufc"] = "automatic"
-    summary["providers"]["dwcs"] = "automatic"
+            summary["warnings"].append({"stage":"espn_ufc","message":safe_error(error)})
+    for entry in missing(all_events):
+        summary["catalog_issues"].append({"code":"DETAIL_SOURCE_GAP","severity":"warning",
+            "promotion":entry["promotion_key"].upper(),"event_name":entry["name"],
+            "event_date":entry["date"],"message":"Official event retained; ESPN has no matching detailed card yet."})
+    events = sorted([row for row in all_events if event_in_window(row,start,end)],
+                    key=lambda row:(row.get("date") or "",event_name(row)))
+    def fetch(event):
+        try:
+            center = client.get_fightcenter(str(event["id"]))
+            return event, event_fights(event,center), []
+        except EspnMmaNoFightCardError:
+            return event, [], ["Event retained; the source has not published a usable card."]
+    process_cards(args,summary,client,UfcImporter(supabase),all_events,events,"espn_ufc",
+                  ("ufc", "dwcs"),event_name,fetch,should_refresh_listing,mark_listing_refreshed)
 
 
-def sync_pfl(
-    args: argparse.Namespace,
-    summary: dict[str, Any],
-) -> None:
-    provider_run = summary["provider_runs"]["espn_mma"]
-
+def sync_pfl(args, summary):
     if args.skip_pfl:
-        provider_run["status"] = "skipped"
+        summary["provider_runs"]["espn_mma"]["status"] = "skipped"
         return
-
     client = EspnMmaClient(league="pfl")
-    provider_run["status"] = "running"
-    today = date.today()
-    window_start = today - timedelta(days=args.past_days)
-    window_end = today + timedelta(days=args.future_days)
-    all_events = client.get_events_in_window(window_start, window_end)
-    events = [
-        event
-        for event in all_events
-        if event_in_window(event, window_start, window_end)
-    ]
-    events.sort(key=lambda event: (event.get("date") or "", event_name(event)))
-    importer = PflImporter(supabase)
-
-    summary["events_seen"] += len(all_events)
-    summary["events_in_window"] += len(events)
-
-    provider_counts = {
-        "events": len(events),
-        "fights": 0,
-        "results": 0,
-        "requests": 0,
-        "event_errors": 0,
-        "fight_errors": 0,
-        "events_skipped_fresh": 0,
-        "cardless_events_skipped": 0,
-        "card_changes_archived": 0,
-    }
-
-    print(
-        "\nESPN PFL events in sync window: "
-        f"{len(events)} of {len(all_events)} "
-        f"(source: {client.event_source})\n"
-    )
-
-    for event_index, event in enumerate(events, start=1):
-        name = event_name(event)
-        print(f"[PFL {event_index}/{len(events)}] {name}")
-        if not should_refresh_listing(args, "espn_pfl", event):
-            provider_counts["events_skipped_fresh"] += 1
-            print("  FRESH — unchanged distant card checked within three days")
-            continue
+    today = datetime.now(ZoneInfo("America/Chicago")).date()
+    start, end = today-timedelta(days=args.past_days), today+timedelta(days=args.future_days)
+    all_events = client.get_events_in_window(start, end)
+    expected = [row for row in (summary["provider_runs"].get("official_catalog", {}).get("entries") or [])
+                if row["promotion_key"] in ("pfl",) and start.isoformat() <= row["date"] <= end.isoformat()]
+    def missing(rows):
+        return [entry for entry in expected if not any(
+            abs((date.fromisoformat(entry["date"])-parse_event_date(row)).days) <= 1
+            and event_match_score(entry["name"], event_name(row)) >= 0.64
+            for row in rows if parse_event_date(row))]
+    if missing(all_events):
         try:
-            fightcenter = client.get_fightcenter(str(event["id"]))
-            fights = event_fights(event, fightcenter)
-            summary["fights_seen"] += len(fights)
-            provider_counts["fights"] += len(fights)
-            event_result = importer.import_event(
-                event=event,
-                dry_run=args.dry_run,
-            )
+            supplemental = client._get_core_events(start, end)
+            all_events = list({str(row["id"]): row for row in [*all_events,*supplemental]}.values())
+        except Exception as error:
+            summary["warnings"].append({"stage":"espn_mma","message":safe_error(error)})
+    for entry in missing(all_events):
+        summary["catalog_issues"].append({"code":"DETAIL_SOURCE_GAP","severity":"warning",
+            "promotion":entry["promotion_key"].upper(),"event_name":entry["name"],
+            "event_date":entry["date"],"message":"Official event retained; ESPN has no matching detailed card yet."})
+    events = sorted([row for row in all_events if event_in_window(row,start,end)],
+                    key=lambda row:(row.get("date") or "",event_name(row)))
+    def fetch(event):
+        try:
+            center = client.get_fightcenter(str(event["id"]))
+            return event, event_fights(event,center), []
         except EspnMmaNoFightCardError:
-            provider_counts["cardless_events_skipped"] += 1
-            mark_listing_refreshed(args, "espn_pfl", event)
-            print("  CARDLESS LISTING SKIPPED — no ESPN fight competitions")
-            continue
-        except Exception as error:
-            provider_counts["event_errors"] += 1
-            add_error(
-                summary,
-                stage="espn_pfl_event_sync",
-                message=str(error),
-                context=name,
-            )
-            print(f"  PFL EVENT FAILED — {error}")
-            continue
-
-        if event_result["status"] == "imported":
-            summary["events_imported"] += 1
-        elif event_result["status"] == "updated":
-            summary["events_updated"] += 1
-
-        if args.dry_run:
-            for fight in fights:
-                if normalized_status(fight) in OFFICIAL_RESULT_STATUSES:
-                    summary["official_results_found"] += 1
-                    provider_counts["results"] += 1
-            print(f"  DRY RUN — found {len(fights)} fights")
-            continue
-
-        event_id = int(event_result["event_id"])
-        active_fight_ids: list[int] = []
-        event_fight_errors_before = provider_counts["fight_errors"]
-        for fight_order, fight in enumerate(fights, start=1):
-            matchup = espn_matchup_label(fight)
-            try:
-                fight_result = importer.import_fight(
-                    event_id=event_id,
-                    fight=fight,
-                    fight_order=fight_order,
-                )
-                if fight_result["status"] == "imported":
-                    summary["fights_imported"] += 1
-                elif fight_result["status"] == "updated":
-                    summary["fights_updated"] += 1
-                if fight_result.get("fight_id") is not None:
-                    active_fight_ids.append(int(fight_result["fight_id"]))
-                if fight_result["fight_status"] in OFFICIAL_RESULT_STATUSES:
-                    summary["official_results_found"] += 1
-                    provider_counts["results"] += 1
-            except Exception as error:
-                provider_counts["fight_errors"] += 1
-                add_error(
-                    summary,
-                    stage="espn_pfl_fight_sync",
-                    message=str(error),
-                    context=f"{name}: {matchup}",
-                )
-                print(f"  PFL FIGHT FAILED — {matchup}: {error}")
-
-        if (
-            active_fight_ids
-            and provider_counts["fight_errors"] == event_fight_errors_before
-        ):
-            archived = archive_upcoming_card_changes(
-                event, today, event_id, active_fight_ids
-            )
-            provider_counts["card_changes_archived"] += len(archived)
-            if archived:
-                print(f"  CARD CHANGES — archived {len(archived)} removed matchup(s)")
-        mark_listing_refreshed(args, "espn_pfl", event)
-
-    provider_counts["requests"] = client.request_count
-    provider_counts["source"] = client.event_source
-    provider_counts["fightcenter_fallbacks"] = (
-        client.fightcenter_fallbacks
-    )
-    provider_run.update(provider_counts)
-    provider_run["status"] = (
-        "partial"
-        if provider_counts["event_errors"] or provider_counts["fight_errors"]
-        else "completed"
-    )
-    summary["providers"]["pfl"] = "automatic"
+            return event, [], ["Event retained; the source has not published a usable card."]
+    process_cards(args,summary,client,PflImporter(supabase),all_events,events,"espn_mma",
+                  ("pfl",),event_name,fetch,should_refresh_listing,mark_listing_refreshed)
 
 
-def sync_one(
-    args: argparse.Namespace,
-    summary: dict[str, Any],
-) -> None:
-    provider_run = summary["provider_runs"]["one_championship"]
-
+def sync_one(args, summary):
     if args.skip_one:
-        provider_run["status"] = "skipped"
+        summary["provider_runs"]["one_championship"]["status"]="skipped"
         return
-
-    client = OneChampionshipClient()
-    provider_run["status"] = "running"
-    today = date.today()
-    window_start = today - timedelta(days=args.past_days)
-    window_end = today + timedelta(days=args.future_days)
-    listing_html = client.get_event_listing()
-    all_events = parse_one_event_listing(listing_html)
-    events = [
-        event
-        for event in all_events
-        if one_event_in_window(event, window_start, window_end)
-    ]
-    events.sort(
-        key=lambda event: (event.get("date") or "", one_event_name(event))
-    )
-    importer = OneChampionshipImporter(supabase)
-
-    summary["events_seen"] += len(all_events)
-    summary["events_in_window"] += len(events)
-    provider_counts = {
-        "events": len(events),
-        "fights": 0,
-        "results": 0,
-        "requests": 0,
-        "event_errors": 0,
-        "events_skipped_fresh": 0,
-        "card_changes_archived": 0,
-    }
-
-    print(
-        "\nOfficial ONE events in sync window: "
-        f"{len(events)} of {len(all_events)}\n"
-    )
-
-    for event_index, listed_event in enumerate(events, start=1):
-        name = one_event_name(listed_event)
-        print(f"[ONE {event_index}/{len(events)}] {name}")
-        if not should_refresh_listing(args, "one", listed_event):
-            provider_counts["events_skipped_fresh"] += 1
-            print("  FRESH — unchanged distant card checked within three days")
-            continue
-        try:
-            event_html = client.get_event_page(listed_event["external_url"])
-            status_payload = None
-            status_url = one_event_status_url(event_html)
-            if (
-                status_url
-                and listed_event.get("date")
-                and one_dashboard_event_date(listed_event) <= today
-            ):
-                status_payload = client.get_event_status(status_url)
-            event = enrich_one_event(
-                listed_event,
-                event_html,
-                status_payload=status_payload,
-            )
-            fights = parse_one_fights(event, event_html)
-            summary["fights_seen"] += len(fights)
-            provider_counts["fights"] += len(fights)
-
-            event_result = importer.import_event(
-                event=event,
-                dry_run=args.dry_run,
-            )
-            if event_result["status"] == "imported":
-                summary["events_imported"] += 1
-            elif event_result["status"] == "updated":
-                summary["events_updated"] += 1
-
-            if args.dry_run:
-                for fight in fights:
-                    if one_normalized_status(fight) in OFFICIAL_RESULT_STATUSES:
-                        summary["official_results_found"] += 1
-                        provider_counts["results"] += 1
-                print(f"  DRY RUN — found {len(fights)} fights")
-                continue
-
-            event_id = int(event_result["event_id"])
-            active_fight_ids: list[int] = []
-            for fight_order, fight in enumerate(fights, start=1):
-                fight_result = importer.import_fight(
-                    event_id=event_id,
-                    fight=fight,
-                    fight_order=fight.get("official_order") or fight_order,
-                )
-                if fight_result["status"] == "imported":
-                    summary["fights_imported"] += 1
-                elif fight_result["status"] == "updated":
-                    summary["fights_updated"] += 1
-                if fight_result.get("fight_id") is not None:
-                    active_fight_ids.append(int(fight_result["fight_id"]))
-
-                if fight_result["fight_status"] in OFFICIAL_RESULT_STATUSES:
-                    summary["official_results_found"] += 1
-                    provider_counts["results"] += 1
-            archived = archive_upcoming_card_changes(
-                event, today, event_id, active_fight_ids
-            )
-            provider_counts["card_changes_archived"] += len(archived)
-            if archived:
-                print(f"  CARD CHANGES — archived {len(archived)} removed matchup(s)")
-            mark_listing_refreshed(args, "one", listed_event)
-        except Exception as error:
-            provider_counts["event_errors"] += 1
-            add_error(
-                summary,
-                stage="one_event_sync",
-                message=str(error),
-                context=name,
-            )
-            print(f"  ONE EVENT FAILED — {error}")
-
-    provider_counts["requests"] = client.request_count
-    provider_run.update(provider_counts)
-    if provider_counts["event_errors"]:
-        provider_run["status"] = "failed"
-        summary["providers"]["one"] = "failed"
-    else:
-        provider_run["status"] = "completed"
-        summary["providers"]["one"] = "automatic"
+    client=OneChampionshipClient()
+    today=datetime.now(ZoneInfo("America/Chicago")).date()
+    start,end=today-timedelta(days=args.past_days),today+timedelta(days=args.future_days)
+    all_events=parse_one_event_listing(client.get_event_listing())
+    events=sorted([row for row in all_events if one_event_in_window(row,start,end)],key=lambda row:(row.get("date") or "",one_event_name(row)))
+    def fetch(listed):
+        html=client.get_event_page(listed["external_url"])
+        status_url=one_event_status_url(html)
+        status=client.get_event_status(status_url) if status_url and one_dashboard_event_date(listed)<=today else None
+        event=enrich_one_event(listed,html,status_payload=status)
+        return event,parse_one_fights(event,html),[]
+    process_cards(args,summary,client,OneChampionshipImporter(supabase),all_events,events,
+                  "one_championship",("one",),one_event_name,fetch,should_refresh_listing,mark_listing_refreshed)
 
 
-def sync_lfa(
-    args: argparse.Namespace,
-    summary: dict[str, Any],
-) -> None:
-    provider_run = summary["provider_runs"]["lfa"]
-
+def sync_lfa(args, summary):
     if args.skip_lfa:
-        provider_run["status"] = "skipped"
+        summary["provider_runs"]["lfa"]["status"]="skipped"
         return
-
-    client = LfaClient()
-    provider_run["status"] = "running"
-    today = date.today()
-    window_start = today - timedelta(days=args.past_days)
-    window_end = today + timedelta(days=args.future_days)
-
-    official_upcoming = parse_lfa_official_events(
-        client.get_official_upcoming(),
-        status="upcoming",
-    )
-    official_past = parse_lfa_official_events(
-        client.get_official_past(),
-        status="completed",
-    )
-    sherdog_events = parse_lfa_sherdog_index(client.get_sherdog_index())
-    all_events = merge_lfa_event_listings(
-        [*official_upcoming, *official_past],
-        sherdog_events,
-    )
-    events = [
-        event
-        for event in all_events
-        if lfa_event_in_window(event, window_start, window_end)
-    ]
-    events.sort(
-        key=lambda event: (event.get("date") or "", lfa_event_name(event))
-    )
-    importer = LfaImporter(supabase)
-
-    summary["events_seen"] += len(all_events)
-    summary["events_in_window"] += len(events)
-    provider_counts = {
-        "events": len(events),
-        "fights": 0,
-        "results": 0,
-        "requests": 0,
-        "event_errors": 0,
-        "events_awaiting_card": 0,
-        "events_skipped_fresh": 0,
-        "card_changes_archived": 0,
-    }
-
-    print(
-        "\nLFA events in sync window: "
-        f"{len(events)} of {len(all_events)}\n"
-    )
-
-    for event_index, event in enumerate(events, start=1):
-        name = lfa_event_name(event)
-        print(f"[LFA {event_index}/{len(events)}] {name}")
-        if not should_refresh_listing(args, "lfa", event):
-            provider_counts["events_skipped_fresh"] += 1
-            print("  FRESH — unchanged distant card checked within three days")
-            continue
-        try:
-            fights: list[dict[str, Any]] = []
-            event_page_url = lfa_sherdog_event_url(event)
-            if event_page_url:
-                event_html = client.get_sherdog_event(event_page_url)
-                fights = parse_lfa_fights(event, event_html)
-            else:
-                provider_counts["events_awaiting_card"] += 1
-                print("  CARD PENDING — no published Sherdog card yet")
-
-            summary["fights_seen"] += len(fights)
-            provider_counts["fights"] += len(fights)
-            event_result = importer.import_event(
-                event=event,
-                dry_run=args.dry_run,
-            )
-            if event_result["status"] == "imported":
-                summary["events_imported"] += 1
-            elif event_result["status"] == "updated":
-                summary["events_updated"] += 1
-
-            if args.dry_run:
-                for fight in fights:
-                    if lfa_normalized_status(fight) in OFFICIAL_RESULT_STATUSES:
-                        summary["official_results_found"] += 1
-                        provider_counts["results"] += 1
-                print(f"  DRY RUN — found {len(fights)} fights")
-                continue
-
-            event_id = int(event_result["event_id"])
-            active_fight_ids: list[int] = []
-            for fight_order, fight in enumerate(fights, start=1):
-                fight_result = importer.import_fight(
-                    event_id=event_id,
-                    fight=fight,
-                    fight_order=fight_order,
-                )
-                if fight_result["status"] == "imported":
-                    summary["fights_imported"] += 1
-                elif fight_result["status"] == "updated":
-                    summary["fights_updated"] += 1
-                if fight_result.get("fight_id") is not None:
-                    active_fight_ids.append(int(fight_result["fight_id"]))
-
-                if fight_result["fight_status"] in OFFICIAL_RESULT_STATUSES:
-                    summary["official_results_found"] += 1
-                    provider_counts["results"] += 1
-            archived = archive_upcoming_card_changes(
-                event, today, event_id, active_fight_ids
-            )
-            provider_counts["card_changes_archived"] += len(archived)
-            if archived:
-                print(f"  CARD CHANGES — archived {len(archived)} removed matchup(s)")
-            mark_listing_refreshed(args, "lfa", event)
-        except Exception as error:
-            provider_counts["event_errors"] += 1
-            add_error(
-                summary,
-                stage="lfa_event_sync",
-                message=str(error),
-                context=name,
-            )
-            print(f"  LFA EVENT FAILED — {error}")
-
-    provider_counts["requests"] = client.request_count
-    provider_run.update(provider_counts)
-    if provider_counts["event_errors"]:
-        provider_run["status"] = "failed"
-        summary["providers"]["lfa"] = "failed"
-    else:
-        provider_run["status"] = "completed"
-        summary["providers"]["lfa"] = "automatic"
+    client=LfaClient()
+    today=datetime.now(ZoneInfo("America/Chicago")).date()
+    start,end=today-timedelta(days=args.past_days),today+timedelta(days=args.future_days)
+    official=[*parse_lfa_official_events(client.get_official_upcoming(),status="upcoming"),
+              *parse_lfa_official_events(client.get_official_past(),status="completed")]
+    all_events=merge_lfa_event_listings(official,parse_lfa_sherdog_index(client.get_sherdog_index()))
+    events=sorted([row for row in all_events if lfa_event_in_window(row,start,end)],key=lambda row:(row.get("date") or "",lfa_event_name(row)))
+    def fetch(event):
+        url=lfa_sherdog_event_url(event)
+        fights=parse_lfa_fights(event,client.get_sherdog_event(url)) if url else []
+        return event,fights,[] if url else ["Official event retained; no published detailed card was found."]
+    process_cards(args,summary,client,LfaImporter(supabase),all_events,events,"lfa",("lfa",),
+                  lfa_event_name,fetch,should_refresh_listing,mark_listing_refreshed)
 
 
-def sync_bkfc(
-    args: argparse.Namespace,
-    summary: dict[str, Any],
-) -> None:
-    provider_run = summary["provider_runs"]["bkfc"]
-
+def sync_bkfc(args, summary):
     if args.skip_bkfc:
-        provider_run["status"] = "skipped"
+        summary["provider_runs"]["bkfc"]["status"]="skipped"
         return
-
-    client = BkfcClient()
-    provider_run["status"] = "running"
-    today = date.today()
-    window_start = today - timedelta(days=args.past_days)
-    window_end = today + timedelta(days=args.future_days)
-    upcoming = parse_bkfc_event_listing(
-        client.get_upcoming(), status="upcoming"
-    )
-    past = parse_bkfc_event_listing(
-        client.get_past(), status="completed"
-    )
-    all_events = merge_bkfc_event_listings(upcoming, past)
-    events = [
-        event
-        for event in all_events
-        if bkfc_event_in_window(event, window_start, window_end)
-    ]
-    events.sort(
-        key=lambda event: (event.get("date") or "", bkfc_event_name(event))
-    )
-    importer = BkfcImporter(supabase)
-
-    summary["events_seen"] += len(all_events)
-    summary["events_in_window"] += len(events)
-    provider_counts = {
-        "events": len(events),
-        "fights": 0,
-        "results": 0,
-        "requests": 0,
-        "event_errors": 0,
-        "events_awaiting_card": 0,
-        "events_with_official_stats": 0,
-        "stats_warnings": 0,
-        "events_skipped_fresh": 0,
-        "card_changes_archived": 0,
-    }
-
-    print(
-        "\nOfficial BKFC events in sync window: "
-        f"{len(events)} of {len(all_events)}\n"
-    )
-
-    for event_index, listed_event in enumerate(events, start=1):
-        name = bkfc_event_name(listed_event)
-        print(f"[BKFC {event_index}/{len(events)}] {name}")
-        if not should_refresh_listing(args, "bkfc", listed_event):
-            provider_counts["events_skipped_fresh"] += 1
-            print("  FRESH — unchanged distant card checked within three days")
-            continue
-        try:
-            event_html = client.get_event_page(listed_event["external_url"])
-            event = enrich_bkfc_event(listed_event, event_html)
-            stats_payload = None
-            stats_url = bkfc_event_stats_url(event_html)
-            if stats_url:
-                try:
-                    stats_payload = client.get_event_stats(stats_url)
-                    provider_counts["events_with_official_stats"] += 1
-                except BkfcProviderError as stats_error:
-                    provider_counts["stats_warnings"] += 1
-                    print(
-                        "  STATS UNAVAILABLE — importing the card without "
-                        f"optional official stats ({stats_error})"
-                    )
-            fights = parse_bkfc_fights(
-                event,
-                event_html,
-                stats_payload=stats_payload,
-            )
-            if not fights:
-                provider_counts["events_awaiting_card"] += 1
-                print("  CARD PENDING — no published BKFC bouts yet")
-
-            summary["fights_seen"] += len(fights)
-            provider_counts["fights"] += len(fights)
-            event_result = importer.import_event(
-                event=event,
-                dry_run=args.dry_run,
-            )
-            if event_result["status"] == "imported":
-                summary["events_imported"] += 1
-            elif event_result["status"] == "updated":
-                summary["events_updated"] += 1
-
-            if args.dry_run:
-                for fight in fights:
-                    if bkfc_normalized_status(fight) in OFFICIAL_RESULT_STATUSES:
-                        summary["official_results_found"] += 1
-                        provider_counts["results"] += 1
-                print(f"  DRY RUN — found {len(fights)} fights")
-                continue
-
-            event_id = int(event_result["event_id"])
-            active_fight_ids: list[int] = []
-            for fight_order, fight in enumerate(fights, start=1):
-                fight_result = importer.import_fight(
-                    event_id=event_id,
-                    fight=fight,
-                    fight_order=fight_order,
-                )
-                if fight_result["status"] == "imported":
-                    summary["fights_imported"] += 1
-                elif fight_result["status"] == "updated":
-                    summary["fights_updated"] += 1
-                if fight_result.get("fight_id") is not None:
-                    active_fight_ids.append(int(fight_result["fight_id"]))
-
-                if fight_result["fight_status"] in OFFICIAL_RESULT_STATUSES:
-                    summary["official_results_found"] += 1
-                    provider_counts["results"] += 1
-            archived = archive_upcoming_card_changes(
-                event, today, event_id, active_fight_ids
-            )
-            provider_counts["card_changes_archived"] += len(archived)
-            if archived:
-                print(f"  CARD CHANGES — archived {len(archived)} removed matchup(s)")
-            mark_listing_refreshed(args, "bkfc", listed_event)
-        except Exception as error:
-            provider_counts["event_errors"] += 1
-            add_error(
-                summary,
-                stage="bkfc_event_sync",
-                message=str(error),
-                context=name,
-            )
-            print(f"  BKFC EVENT FAILED — {error}")
-
-    provider_counts["requests"] = client.request_count
-    provider_run.update(provider_counts)
-    if provider_counts["event_errors"]:
-        provider_run["status"] = "failed"
-        summary["providers"]["bkfc"] = "failed"
-    else:
-        provider_run["status"] = "completed"
-        summary["providers"]["bkfc"] = "automatic"
+    client=BkfcClient()
+    today=datetime.now(ZoneInfo("America/Chicago")).date()
+    start,end=today-timedelta(days=args.past_days),today+timedelta(days=args.future_days)
+    all_events=merge_bkfc_event_listings(parse_bkfc_event_listing(client.get_upcoming(),status="upcoming"),
+                                       parse_bkfc_event_listing(client.get_past(),status="completed"))
+    events=sorted([row for row in all_events if bkfc_event_in_window(row,start,end)],key=lambda row:(row.get("date") or "",bkfc_event_name(row)))
+    def fetch(listed):
+        html=client.get_event_page(listed["external_url"])
+        event=enrich_bkfc_event(listed,html)
+        stats_url=bkfc_event_stats_url(html)
+        stats,warnings=None,[]
+        if stats_url:
+            try: stats=client.get_event_stats(stats_url)
+            except BkfcProviderError as error: warnings.append(safe_error(error))
+        return event,parse_bkfc_fights(event,html,stats_payload=stats),warnings
+    process_cards(args,summary,client,BkfcImporter(supabase),all_events,events,"bkfc",("bkfc",),
+                  bkfc_event_name,fetch,should_refresh_listing,mark_listing_refreshed)
 
 
 def run_catalog_sync(
@@ -1298,7 +700,7 @@ def run_catalog_sync(
     except Exception as error:
         summary["provider_runs"]["official_catalog"] = {
             "status": "failed",
-            "message": str(error),
+            "message": safe_error(error),
             "catalogs": {},
         }
         summary["catalog_issues"] = [{
@@ -1309,13 +711,13 @@ def run_catalog_sync(
                 if args.requested_scope != "all"
                 else "UFC / DWCS / PFL"
             ),
-            "message": str(error),
+            "message": safe_error(error),
         }]
         summary["warnings"].append({
             "stage": "official_event_catalog",
-            "message": str(error),
+            "message": safe_error(error),
         })
-        print("\nOFFICIAL EVENT CATALOG ISSUE — " + str(error))
+        print("\nOFFICIAL EVENT CATALOG ISSUE — " + safe_error(error))
 
 
 def run_odds_import(
@@ -1329,10 +731,11 @@ def run_odds_import(
         summary["provider_runs"]["fightodds"]["status"] = "skipped"
         return
 
-    has_primary = bool(os.getenv("THE_ODDS_API_KEY"))
+    skip_keyed=getattr(args,"skip_keyed_odds",False)
+    has_primary = bool(os.getenv("THE_ODDS_API_KEY")) and not skip_keyed
     _fallback_key, fallback_key_environment = resolve_api_sports_key()
-    has_fallback = bool(_fallback_key)
-    if not has_primary and not has_fallback:
+    has_fallback = bool(_fallback_key) and not skip_keyed
+    if not has_primary and not has_fallback and not skip_keyed:
         summary["provider_runs"]["the_odds_api"]["status"] = "skipped_missing_key"
         summary["provider_runs"]["api_sports_mma"] = {
             "status": "skipped_missing_key",
@@ -1354,7 +757,7 @@ def run_odds_import(
             encoding="utf-8", errors="backslashreplace", check=False,
         )
         if result.stdout:
-            print("\n" + result.stdout.rstrip())
+            print("\n" + safe_error(result.stdout).rstrip())
         metrics = {}
         for line in (result.stdout or "").splitlines():
             if line.startswith("ODDS_IMPORT_SUMMARY="):
@@ -1365,18 +768,20 @@ def run_odds_import(
         metrics["status"] = "failed" if result.returncode else metrics.get("status", "completed")
         summary["provider_runs"]["the_odds_api"] = metrics
         if result.returncode:
-            message = result.stderr.strip() or f"Odds importer exited with code {result.returncode}."
+            message = safe_error(result.stderr).strip() or f"Odds importer exited with code {result.returncode}."
             summary["warnings"].append({"stage": "the_odds_api", "message": message})
             print("\nPRIMARY ODDS IMPORT ISSUE — " + message)
         else:
             successful_provider = True
     else:
-        summary["provider_runs"]["the_odds_api"]["status"] = "skipped_missing_key"
+        summary["provider_runs"]["the_odds_api"]["status"] = "skipped_retry_budget" if skip_keyed else "skipped_missing_key"
 
-    if has_fallback:
+    gap_audit = audit_upcoming_coverage(supabase)
+    gap_ids = {int(m["fight_id"]) for c in gap_audit["cards"] if c["odds_expected"] for m in c["missing_matchups"]}
+    if has_fallback and gap_ids:
         try:
             from providers.api_sports_mma.import_current_odds import import_api_sports_odds
-            metrics = import_api_sports_odds()
+            metrics = import_api_sports_odds(target_fight_ids=gap_ids)
             metrics.setdefault("key_environment", fallback_key_environment)
             summary["provider_runs"]["api_sports_mma"] = metrics
             successful_provider = successful_provider or metrics.get("status") in {
@@ -1388,14 +793,13 @@ def run_odds_import(
                 f"{metrics.get('requests', 0)} requests."
             )
         except Exception as error:
-            summary["provider_runs"]["api_sports_mma"] = {"status": "failed", "message": str(error)}
-            summary["warnings"].append({"stage": "api_sports_mma", "message": str(error)})
-            print("\nAPI-SPORTS ODDS FALLBACK ISSUE — " + str(error))
+            summary["provider_runs"]["api_sports_mma"] = {"status": "failed", "message": safe_error(error)}
+            summary["warnings"].append({"stage": "api_sports_mma", "message": safe_error(error)})
+            print("\nAPI-SPORTS ODDS FALLBACK ISSUE — " + safe_error(error))
     else:
         summary["provider_runs"]["api_sports_mma"] = {
-            "status": "skipped_missing_key",
+            "status": "skipped_retry_budget" if skip_keyed else "skipped_no_gaps" if has_fallback else "skipped_missing_key",
             "accepted_key_names": list(API_SPORTS_KEY_NAMES),
-            "env_files_checked": [str(path) for path in API_SPORTS_ENV_PATHS],
         }
 
     try:
@@ -1415,35 +819,11 @@ def run_odds_import(
             f"{fightodds_metrics.get('requests', 0)} pages."
         )
     except Exception as error:
-        summary["provider_runs"]["fightodds"] = {"status": "failed", "message": str(error)}
-        summary["warnings"].append({"stage": "fightodds", "message": str(error)})
-        print("\nFIGHTODDS FALLBACK ISSUE — " + str(error))
+        summary["provider_runs"]["fightodds"] = {"status": "failed", "message": safe_error(error)}
+        summary["warnings"].append({"stage": "fightodds", "message": safe_error(error)})
+        print("\nFIGHTODDS FALLBACK ISSUE — " + safe_error(error))
 
     summary["odds_status"] = "completed" if successful_provider else "failed"
-
-
-def run_lightweight_history_check(args: argparse.Namespace, summary: dict[str, Any]) -> None:
-    if args.dry_run:
-        summary["history_check"] = {"status": "skipped_dry_run"}
-        return
-    command = [
-        sys.executable, str(API_ROOT / "sync" / "history_maintenance.py"),
-        "--skip-provider-refresh", "--due-only", "--max-fighters", "8",
-    ]
-    result = subprocess.run(
-        command, cwd=PROJECT_ROOT, capture_output=True, text=True,
-        encoding="utf-8", errors="backslashreplace", check=False,
-        env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
-    )
-    summary["history_check"] = {
-        "status": "completed" if result.returncode == 0 else "failed",
-        "exit_code": result.returncode,
-    }
-    if result.returncode:
-        summary["warnings"].append({
-            "stage": "fighter_history_check",
-            "message": (result.stderr or result.stdout or "History check failed.")[-1200:],
-        })
 
 
 def run_quality_audit(summary: dict[str, Any]) -> None:
@@ -1461,8 +841,8 @@ def run_quality_audit(summary: dict[str, Any]) -> None:
         if summary["odds_status"] == "completed" and expected and covered < expected:
             summary["odds_status"] = "completed_with_gaps"
     except Exception as error:
-        summary["quality_audit"] = {"status": "failed", "issues": [], "message": str(error)}
-        summary["warnings"].append({"stage": "coverage_audit", "message": str(error)})
+        summary["quality_audit"] = {"status": "failed", "issues": [], "message": safe_error(error)}
+        summary["warnings"].append({"stage": "coverage_audit", "message": safe_error(error)})
 
 
 def write_local_report(summary: dict[str, Any]) -> Path:
@@ -1470,7 +850,7 @@ def write_local_report(summary: dict[str, Any]) -> Path:
     timestamp = datetime.now(timezone.utc).strftime(
         "%Y%m%dT%H%M%SZ"
     )
-    report_path = REPORTS_ROOT / f"sync_{timestamp}.json"
+    report_path = REPORTS_ROOT / f"sync_{timestamp}_{uuid4().hex[:8]}.json"
     report_path.write_text(
         json.dumps(summary, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -1497,11 +877,12 @@ def start_sync_run(summary: dict[str, Any]) -> int | None:
         },
     }
     try:
-        response = supabase.table("data_sync_runs").insert(record).execute()
-        return int(response.data[0]["data_sync_run_id"]) if response.data else None
+        saved = save_rows(supabase,"data_sync_runs",[record])
+        if not saved:
+            raise RuntimeError("Running status insert returned no row.")
+        return int(saved[0]["data_sync_run_id"])
     except Exception as error:
-        print(f"\nWARNING — running sync status could not be saved: {error}")
-        return None
+        raise RuntimeError("Refresh could not register its running status; no imports were started.") from error
 
 
 def save_sync_run(summary: dict[str, Any], run_id: int | None = None) -> None:
@@ -1523,22 +904,11 @@ def save_sync_run(summary: dict[str, Any], run_id: int | None = None) -> None:
     }
 
     try:
-        if run_id is None:
-            supabase.table("data_sync_runs").insert(record).execute()
-        else:
-            response = (
-                supabase.table("data_sync_runs")
-                .update(record)
-                .eq("data_sync_run_id", run_id)
-                .execute()
-            )
-            if not response.data:
-                raise RuntimeError("Running sync row was not found at completion.")
+        if run_id is not None: record["data_sync_run_id"]=run_id
+        if not save_rows(supabase,"data_sync_runs",[record]):
+            raise RuntimeError("Running sync row was not found at completion.")
     except Exception as error:
-        print(
-            "\nWARNING — sync finished, but its dashboard status "
-            f"could not be saved: {error}"
-        )
+        raise RuntimeError("Refresh completion could not be saved; Discord publication is withheld.") from error
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1578,6 +948,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-retention", action="store_true")
     parser.add_argument("--skip-catalog", action="store_true")
     parser.add_argument("--skip-odds", action="store_true")
+    parser.add_argument("--skip-keyed-odds",action="store_true",help="Use existing/public prices during automatic retries without repeating paid API requests.")
     parser.add_argument("--skip-stats", action="store_true")
     parser.add_argument("--skip-ufc", action="store_true")
     parser.add_argument("--skip-ufcstats", action="store_true")
@@ -1589,7 +960,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--requested-scope",
         default="all",
-        choices=("all", "ufc", "dwcs", "pfl", "one", "lfa", "bkfc"),
+        choices=("all", "ufc", "dwcs", "pfl", "one", "lfa", "bkfc", "odds", "custom"),
         help="Dashboard-requested refresh scope, stored for truthful status labels.",
     )
     parser.add_argument(
@@ -1608,18 +979,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
-    if args.mode == "daily":
-        # Current cards/results already come from each promotion adapter. Slow
-        # browser-based historical/stat enrichment belongs to maintenance.
-        args.skip_ufcstats = True
-        args.skip_stats = True
-    args.freshness_cache = EventFreshnessCache(FRESHNESS_STATE)
-    summary = empty_summary(args)
-    summary["no_dashboard_status"] = args.no_dashboard_status
-    run_id = start_sync_run(summary)
-
+def execute_sync(args, summary, run_id, lease):
     print("=" * 64)
     print("MMA DASHBOARD DATA SYNC")
     print(
@@ -1663,10 +1023,10 @@ def main() -> int:
         add_error(
             summary,
             stage="espn_ufc_sync",
-            message=str(error),
+            message=safe_error(error),
             context=traceback.format_exc(limit=5),
         )
-        print("\nESPN UFC/DWCS SYNC FAILED — " + str(error))
+        print("\nESPN UFC/DWCS SYNC FAILED — " + safe_error(error))
 
     if args.skip_ufc or args.skip_ufcstats:
         summary["provider_runs"]["ufcstats"]["status"] = "skipped"
@@ -1683,10 +1043,10 @@ def main() -> int:
             add_error(
                 summary,
                 stage="ufcstats_sync",
-                message=str(error),
+                message=safe_error(error),
                 context=traceback.format_exc(limit=5),
             )
-            print("\nUFCSTATS SYNC FAILED — " + str(error))
+            print("\nUFCSTATS SYNC FAILED — " + safe_error(error))
 
     try:
         timed_stage(
@@ -1701,10 +1061,10 @@ def main() -> int:
         add_error(
             summary,
             stage="pfl_sync",
-            message=str(error),
+            message=safe_error(error),
             context=traceback.format_exc(limit=5),
         )
-        print("\nPFL SYNC FAILED — " + str(error))
+        print("\nPFL SYNC FAILED — " + safe_error(error))
 
     try:
         timed_stage(
@@ -1719,10 +1079,10 @@ def main() -> int:
         add_error(
             summary,
             stage="one_sync",
-            message=str(error),
+            message=safe_error(error),
             context=traceback.format_exc(limit=5),
         )
-        print("\nONE SYNC FAILED — " + str(error))
+        print("\nONE SYNC FAILED — " + safe_error(error))
 
     try:
         timed_stage(
@@ -1737,10 +1097,10 @@ def main() -> int:
         add_error(
             summary,
             stage="lfa_sync",
-            message=str(error),
+            message=safe_error(error),
             context=traceback.format_exc(limit=5),
         )
-        print("\nLFA SYNC FAILED — " + str(error))
+        print("\nLFA SYNC FAILED — " + safe_error(error))
 
     try:
         timed_stage(
@@ -1755,10 +1115,10 @@ def main() -> int:
         add_error(
             summary,
             stage="bkfc_sync",
-            message=str(error),
+            message=safe_error(error),
             context=traceback.format_exc(limit=5),
         )
-        print("\nBKFC SYNC FAILED — " + str(error))
+        print("\nBKFC SYNC FAILED — " + safe_error(error))
 
     try:
         timed_stage(
@@ -1771,11 +1131,11 @@ def main() -> int:
         add_error(
             summary,
             stage="odds_sync",
-            message=str(error),
+            message=safe_error(error),
             context=traceback.format_exc(limit=5),
         )
         summary["odds_status"] = "failed"
-        print("\nODDS SYNC FAILED — " + str(error))
+        print("\nODDS SYNC FAILED — " + safe_error(error))
 
     summary["history_check"] = {"status": "deferred_to_weekly_maintenance"}
     timed_stage(
@@ -1785,25 +1145,22 @@ def main() -> int:
         lambda: run_quality_audit(summary),
     )
     try:
-        args.freshness_cache.save()
+        if not args.dry_run:
+            args.freshness_cache.save()
     except OSError as error:
         summary["warnings"].append({
             "stage": "freshness_cache",
-            "message": f"Refresh cache could not be saved: {error}",
+            "message": f"Refresh cache could not be saved: {safe_error(error)}",
         })
 
     summary["finished_at"] = utc_now()
-    if not summary["errors"]:
-        summary["status"] = "success"
-    elif (
-        summary["events_seen"] == 0
-        and summary["provider_runs"]["ufcstats"]["status"] != "skipped"
-    ):
-        summary["status"] = "failed"
-    else:
-        summary["status"] = "partial"
-    report_path = write_local_report(summary)
+    lease.ensure_owned()
+    finalize_readiness(summary,args)
     save_sync_run(summary, run_id)
+    try:
+        report_path = write_local_report(summary)
+    except OSError:
+        report_path = "Local report could not be written; database status was saved."
 
     print("\n" + "=" * 64)
     print(f"Status:             {summary['status'].upper()}")
@@ -1840,7 +1197,39 @@ def main() -> int:
     print(f"Local report:       {report_path}")
     print("=" * 64)
 
-    return 0 if not summary["errors"] else 1
+    failed_catalog = not args.skip_catalog and args.requested_scope in {"all","ufc","dwcs","pfl"} and summary["provider_runs"]["official_catalog"]["status"] != "completed"
+    required_cards_not_ready=args.mode=="daily" and args.requested_scope=="all" and not args.dry_run and not summary["publishable"]
+    return 1 if summary["errors"] or failed_catalog or summary["quality_audit"]["status"] == "failed" or required_cards_not_ready else 0
+
+
+def main() -> int:
+    args=build_parser().parse_args()
+    args.requested_scope=resolve_scope(args)
+    if args.dry_run:
+        args.skip_odds=True
+    if args.mode == "daily":
+        args.skip_ufcstats=True
+        args.skip_stats=True
+    args.freshness_cache=EventFreshnessCache(FRESHNESS_STATE)
+    try:
+        with SyncLease(supabase,dry_run=args.dry_run) as lease:
+            summary=empty_summary(args)
+            summary["no_dashboard_status"]=args.no_dashboard_status
+            summary["lease_fence"]=os.environ.get("MMA_SYNC_LEASE_FENCE")
+            run_id=start_sync_run(summary)
+            try:
+                return execute_sync(args,summary,run_id,lease)
+            except BaseException as error:
+                summary.update(status="failed",publishable=False,finished_at=utc_now())
+                summary["errors"].append({"stage":"interrupted","message":safe_error(error)})
+                save_sync_run(summary,run_id)
+                raise
+    except ImportBusyError as error:
+        print(safe_error(error))
+        return 75
+    except Exception as error:
+        print("Refresh stopped: "+safe_error(error))
+        return 1
 
 
 if __name__ == "__main__":

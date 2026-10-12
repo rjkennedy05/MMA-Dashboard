@@ -1,4 +1,5 @@
 import unittest
+from api.tests.fakes import rpc as fake_rpc
 
 from api.providers.bkfc.importer import BkfcImporter
 
@@ -56,6 +57,8 @@ class FakeExternalIdsQuery:
 
 
 class FakeSupabase:
+    rpc = fake_rpc
+
     def __init__(self, rows=None, fighters=None):
         self.external_ids = list(rows or [])
         self.fighters = list(fighters or [])

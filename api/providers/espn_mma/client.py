@@ -249,7 +249,7 @@ class EspnMmaClient:
                 continue
 
             events = payload.get("events")
-            if isinstance(events, list):
+            if isinstance(events, list) and events:
                 self.event_source = (
                     "site_scoreboard"
                     if source_index == 0
@@ -258,7 +258,7 @@ class EspnMmaClient:
                 return [
                     event for event in events if isinstance(event, dict)
                 ]
-            errors.append("ESPN MMA scoreboard is missing its events list.")
+            errors.append("ESPN MMA scoreboard returned an empty or missing events list.")
 
         try:
             events = self._get_core_events(start=start, end=end)

@@ -86,3 +86,13 @@ test("combines valid American parlay legs", () => {
   assert.equal(combineAmericanOdds([-200, -200]), 125);
   assert.equal(combineAmericanOdds([-200]), null);
 });
+
+test('representative snapshots retain the real history count across providers',()=>{
+  const base={fight_id:1,fighter_id:11,sportsbook:'DraftKings',sportsbook_key:'draftkings'};
+  const history=buildMoneylineHistory([
+    {...base,recorded_at:'2026-10-10T10:00:00Z',american_odds:100,snapshot_group:'draftkings:1',snapshot_count:12},
+    {...base,recorded_at:'2026-10-11T10:00:00Z',american_odds:110,snapshot_group:'draftkings:1',snapshot_count:12},
+    {...base,recorded_at:'2026-10-12T10:00:00Z',american_odds:120,snapshot_group:'draftkings:2',snapshot_count:5},
+  ]);
+  assert.equal(history[1][11][0].snapshot_count,17);
+});

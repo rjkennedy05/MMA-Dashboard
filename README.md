@@ -1,10 +1,14 @@
-# MMA FightCenter — Phase 8 v12.0.1
+# MMA FightCenter — personal reliability 12.1.0
 
-Personal reliability patch **12.0.1** protects the fighter selections attached
-to existing singles, parlay legs, research and AI picks when providers reverse
-their fighter order. See `IMPLEMENTATION-01-BET-IDENTITY.md` for the baseline,
-verification, upgrade steps, limitations and rollback. Discord v6.1 and
-provider-core 1.0 remain compatible.
+This release strengthens imports, saved bets, odds freshness, Discord
+synchronization, and automatic jobs while keeping the existing dashboard layout.
+It pairs with **Discord Companion 6.2 / provider core 1.1** and the existing
+Supabase database upgraded through migration 035.
+
+See [PERSONAL-RELIABILITY-12.1.md](PERSONAL-RELIABILITY-12.1.md) for the changes,
+risks, installation sequence, verification, and recovery. The original v12/v6.1
+sources and the 12.0.1 checkpoint remain preserved; no live database or Discord
+messages were changed during this implementation.
 
 MMA FightCenter is a desktop-first research and betting workspace for UFC,
 DWCS, PFL, ONE, BKFC, and LFA. It combines current fight cards, fighter career

@@ -21,7 +21,7 @@ def preserve_fight_identity(
     """
     response = (
         supabase.table("fights")
-        .select("fight_id,event_id,fighter_a_id,fighter_b_id")
+        .select("fight_id,event_id,fighter_a_id,fighter_b_id,fight_status,winner_id,result_type,method,finish_round,finish_time_seconds")
         .eq("fight_id", fight_id)
         .limit(1)
         .execute()
@@ -43,8 +43,23 @@ def preserve_fight_identity(
             f"Fight #{fight_id} has different stored participants. Existing bets and "
             "research were preserved; review the replacement or fighter identity mapping."
         )
-    return {
+    updated = {
         **fight_data,
         "fighter_a_id": stored_pair[0],
         "fighter_b_id": stored_pair[1],
     }
+    if updated.get("fight_status")=="completed" and updated.get("result_type") in {"draw","no_contest"}:
+        updated["fight_status"]=updated["result_type"];updated["winner_id"]=None
+    terminal = {"completed", "draw", "no_contest"}
+    old_status, new_status = stored.get("fight_status"), updated.get("fight_status")
+    result_fields = ("fight_status", "winner_id", "result_type", "method", "finish_round", "finish_time_seconds")
+    # Missing result markers must not downgrade or erase a confirmed outcome.
+    if old_status in terminal and (new_status not in terminal or
+            (new_status == "completed" and not updated.get("winner_id"))):
+        for field in result_fields:
+            updated[field] = stored.get(field)
+    elif old_status == new_status and new_status in terminal and stored.get("winner_id") == updated.get("winner_id"):
+        for field in result_fields:
+            if updated.get(field) is None:
+                updated[field] = stored.get(field)
+    return updated

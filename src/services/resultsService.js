@@ -1,3 +1,4 @@
+import { readRows } from "./readRows";
 import { supabase } from "../lib/supabase";
 import {
   buildProcessScorecard,
@@ -101,7 +102,8 @@ async function getSingleBets(includeArchived = false) {
     query = query.is("bet_archived_at", null);
   }
 
-  const { data, error } = await query;
+  const data = await readRows(()=>query, "fight_id");
+  const error=null;
 
   if (error) {
     throw error;
@@ -129,6 +131,8 @@ async function getParlayBets(includeArchived = false) {
     .from("bet_tickets")
     .select(`
       ticket_id,
+      ticket_type,
+      revision,
       ticket_label,
       bet_sportsbook,
       ticket_price,
@@ -139,6 +143,7 @@ async function getParlayBets(includeArchived = false) {
       archived_at,
       bet_legs (
         leg_id,
+        selected_fighter_id,
         fight_id,
         bet_side,
         leg_price,
@@ -146,14 +151,14 @@ async function getParlayBets(includeArchived = false) {
         fights!inner (${FIGHT_SELECT})
       )
     `)
-    .eq("ticket_type", "parlay")
     .gt("stake_units", 0);
 
   if (!includeArchived) {
     query = query.is("archived_at", null);
   }
 
-  const { data, error } = await query;
+  const data = await readRows(()=>query,"ticket_id");
+  const error=null;
 
   if (error) {
     throw error;
@@ -180,9 +185,18 @@ async function getParlayBets(includeArchived = false) {
     const promotions = [...new Set(legs.map((leg) => leg.promotion_name))];
     const primaryEventId = eventIds.length === 1 ? eventIds[0] : null;
 
+    if (ticket.ticket_type === "single") {
+      const leg=legs[0];
+      if (!leg) throw new Error("Saved single has no leg; review the import before displaying results.");
+      return {...leg,ticket_type:"single",ticket_id:ticket.ticket_id,revision:ticket.revision,
+        bet_id:`ticket:${ticket.ticket_id}`,bet_sportsbook:ticket.bet_sportsbook,bet_price:ticket.ticket_price,
+        stake_units:ticket.stake_units,settlement_status:ticket.settlement_status,settled_at:ticket.settled_at,
+        placed_at:ticket.placed_at,archived_at:ticket.archived_at,event_ids:eventIds};
+    }
     return {
-      ticket_type: "parlay",
-      bet_id: `parlay:${ticket.ticket_id}`,
+      ticket_type: ticket.ticket_type,
+      revision: ticket.revision,
+      bet_id: `ticket:${ticket.ticket_id}`,
       ticket_id: ticket.ticket_id,
       ticket_label: ticket.ticket_label,
       bet_sportsbook: ticket.bet_sportsbook,
@@ -223,7 +237,7 @@ export async function getTrackedBets({ includeArchived = false } = {}) {
 }
 
 export async function saveBetSettlement(bet, settlementStatus) {
-  const isParlay = bet?.ticket_type === "parlay";
+  const isParlay = Boolean(bet?.ticket_id);
   const identifier = isParlay ? bet?.ticket_id : bet?.fight_id;
   if (!identifier) {
     throw new Error("A bet is required before it can be graded.");
@@ -232,16 +246,16 @@ export async function saveBetSettlement(bet, settlementStatus) {
   const isPending = settlementStatus === "pending";
   const table = isParlay ? "bet_tickets" : "fight_research";
   const idColumn = isParlay ? "ticket_id" : "fight_id";
-  const { data, error } = await supabase
+  let query=supabase
     .from(table)
     .update({
       settlement_status: settlementStatus,
       settled_at: isPending ? null : new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
-    .eq(idColumn, identifier)
-    .select(`${idColumn}, settlement_status, settled_at`)
-    .single();
+    .eq(idColumn, identifier);
+  if(isParlay)query=query.eq("revision",bet.revision);
+  const {data,error}=await query.select(`${idColumn}, settlement_status, settled_at`).single();
 
   if (error) {
     throw error;
@@ -284,28 +298,9 @@ export async function saveSingleBet({
   }
   validateTicketFields({ sportsbook, price: betPrice, stakeUnits });
 
-  const timestamp = new Date().toISOString();
-  const { data, error } = await supabase
-    .from("fight_research")
-    .upsert({
-      fight_id: fightId,
-      bet_side: betSide,
-      bet_sportsbook: sportsbook.trim(),
-      bet_price: Number(betPrice),
-      stake_units: Number(stakeUnits),
-      settlement_status: "pending",
-      settled_at: null,
-      bet_archived_at: null,
-      updated_at: timestamp,
-    }, { onConflict: "fight_id" })
-    .select("fight_id")
-    .single();
-
-  if (error) {
-    throw error;
-  }
-
-  return data;
+  return persistTicket({ticket_type:"single",bet_sportsbook:sportsbook.trim(),
+    ticket_price:Number(betPrice),stake_units:Number(stakeUnits),request_id:crypto.randomUUID()},
+    [{fight_id:fightId,bet_side:betSide,leg_price:Number(betPrice)}]);
 }
 
 export async function updateTrackedBet(bet, edits) {
@@ -328,7 +323,7 @@ export async function updateTrackedBet(bet, edits) {
     updated_at: timestamp,
   };
 
-  if (bet.ticket_type !== "parlay") {
+  if (!bet.ticket_id) {
     if (!["fighter_a", "fighter_b"].includes(edits.bet_side)) {
       throw new Error("Select the fighter used for this single bet.");
     }
@@ -351,45 +346,13 @@ export async function updateTrackedBet(bet, edits) {
     return data;
   }
 
-  const legs = Array.isArray(edits.legs) ? edits.legs : [];
-  if (legs.length < 2) {
-    throw new Error("A parlay must retain at least two legs.");
-  }
-  if (legs.some((leg) => !leg.leg_id
-    || !["fighter_a", "fighter_b"].includes(leg.bet_side)
-    || !validAmericanOdds(leg.leg_price))) {
-    throw new Error("Enter a valid fighter and American price for every parlay leg.");
-  }
-
-  const { data, error } = await supabase
-    .from("bet_tickets")
-    .update({
-      ticket_label: edits.ticket_label?.trim() ?? "",
-      bet_sportsbook: edits.bet_sportsbook.trim(),
-      ticket_price: Number(edits.bet_price),
-      stake_units: Number(edits.stake_units),
-      archived_at: null,
-      ...settlement,
-    })
-    .eq("ticket_id", bet.ticket_id)
-    .select("ticket_id")
-    .single();
-
-  if (error) throw error;
-
-  for (const leg of legs) {
-    const { error: legError } = await supabase
-      .from("bet_legs")
-      .update({
-        bet_side: leg.bet_side,
-        leg_price: Number(leg.leg_price),
-      })
-      .eq("leg_id", leg.leg_id)
-      .eq("ticket_id", bet.ticket_id);
-    if (legError) throw legError;
-  }
-
-  return data;
+  const legs = bet.ticket_type==="single"
+    ? [{fight_id:bet.fight_id,bet_side:edits.bet_side,leg_price:Number(edits.bet_price)}]
+    : (edits.legs??[]).map(leg=>({fight_id:leg.fight_id ?? bet.legs.find(old=>old.leg_id===leg.leg_id)?.fight_id,
+        bet_side:leg.bet_side,leg_price:Number(leg.leg_price)}));
+  return persistTicket({ticket_type:bet.ticket_type,ticket_label:edits.ticket_label?.trim()??"",
+    bet_sportsbook:edits.bet_sportsbook.trim(),ticket_price:Number(edits.bet_price),
+    stake_units:Number(edits.stake_units),settlement_status:settlementStatus},legs,bet.ticket_id,bet.revision);
 }
 
 export async function deleteTrackedBet(bet) {
@@ -397,7 +360,7 @@ export async function deleteTrackedBet(bet) {
     throw new Error("Select a saved ticket to delete.");
   }
 
-  if (bet.ticket_type === "parlay") {
+  if (bet.ticket_id) {
     const { error } = await supabase
       .from("bet_tickets")
       .delete()
@@ -423,23 +386,9 @@ export async function deleteTrackedBet(bet) {
 }
 
 export async function resetCurrentBetPeriod() {
-  const timestamp = new Date().toISOString();
-  const { error: singlesError } = await supabase
-    .from("fight_research")
-    .update({ bet_archived_at: timestamp, updated_at: timestamp })
-    .is("bet_archived_at", null)
-    .not("bet_side", "is", null)
-    .not("bet_price", "is", null)
-    .gt("stake_units", 0);
-  if (singlesError) throw singlesError;
-
-  const { error: parlaysError } = await supabase
-    .from("bet_tickets")
-    .update({ archived_at: timestamp, updated_at: timestamp })
-    .is("archived_at", null);
-  if (parlaysError) throw parlaysError;
-
-  return timestamp;
+  const {data,error}=await supabase.rpc("mma_archive_bet_period");
+  if(error) throw error;
+  return data;
 }
 
 export async function saveParlayTicket({
@@ -469,42 +418,15 @@ export async function saveParlayTicket({
     throw new Error("Enter valid American odds for every selected parlay leg.");
   }
 
-  const timestamp = new Date().toISOString();
-  const { data: ticket, error: ticketError } = await supabase
-    .from("bet_tickets")
-    .insert({
-      ticket_type: "parlay",
-      ticket_label: ticketLabel.trim(),
-      bet_sportsbook: sportsbook.trim(),
-      ticket_price: Number(ticketPrice),
-      stake_units: Number(stakeUnits),
-      settlement_status: "pending",
-      archived_at: null,
-      placed_at: timestamp,
-      updated_at: timestamp,
-    })
-    .select("ticket_id")
-    .single();
+  return persistTicket({ticket_type:"parlay",ticket_label:ticketLabel.trim(),
+    bet_sportsbook:sportsbook.trim(),ticket_price:Number(ticketPrice),stake_units:Number(stakeUnits),
+    request_id:crypto.randomUUID()},normalizedLegs.map(leg=>({...leg,leg_price:Number(leg.leg_price)})));
+}
 
-  if (ticketError) {
-    throw ticketError;
-  }
-
-  const legPayload = normalizedLegs.map((leg, index) => ({
-    ticket_id: ticket.ticket_id,
-    fight_id: leg.fight_id,
-    bet_side: leg.bet_side,
-    leg_price: Number(leg.leg_price),
-    leg_order: index + 1,
-  }));
-  const { error: legError } = await supabase.from("bet_legs").insert(legPayload);
-
-  if (legError) {
-    await supabase.from("bet_tickets").delete().eq("ticket_id", ticket.ticket_id);
-    throw legError;
-  }
-
-  return ticket;
+async function persistTicket(ticket,legs,ticketId=null,revision=null) {
+  const {data,error}=await supabase.rpc("mma_save_ticket",{p_ticket:ticket,p_legs:legs,p_ticket_id:ticketId,p_revision:revision});
+  if(error) throw error;
+  return data;
 }
 
 async function getCompletedLeanRows() {
