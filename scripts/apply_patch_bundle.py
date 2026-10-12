@@ -102,7 +102,7 @@ def install_patch(bundle, dashboard):
     if not changes:
         return None
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    backup = root.parent / "MMA-patch-backups" / ("pfl-fix-2-" + stamp)
+    backup = root.parent / "MMA-patch-backups" / ("mma-patch-" + stamp)
     backup.mkdir(parents=True)
     record = {"dashboard": str(root), "patch": manifest["patch"], "files": {}}
     for name, relative, source, target, before, after in changes:

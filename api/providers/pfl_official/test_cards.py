@@ -7,8 +7,13 @@ import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import httpx
+from postgrest import SyncPostgrestClient
+
+from api.providers.atomic import AtomicImportClient
 from api.providers.espn_mma import normalizer as shared
 from api.providers.espn_mma.test_importer import FakeSupabase
+from api.providers.fight_identity import FightIdentityError
 from api.providers.pfl_official.client import OfficialPflClient
 from api.providers.pfl_official.importer import OfficialPflImporter
 from api.providers.pfl_official.normalizer import OfficialPflCardError, card_metadata, normalize_card
@@ -127,6 +132,196 @@ class OfficialCardTests(unittest.TestCase):
         import_card(importer, event, fights)
         self.assertEqual(first, [(r["fight_id"], r["fighter_a_id"], r["fighter_b_id"]) for r in raw.rows["fights"]])
         self.assertEqual(raw.rows["bet_legs"], original_bet)
+
+
+class SavedCardIdentityTests(unittest.TestCase):
+    def saved_card(self, duplicates=False):
+        raw = database()
+        _, metadata, payload = fixtures()
+        event, fights = normalize_card(ENTRY, metadata, payload)
+        for index, fight in enumerate(fights):
+            fighters = shared.fighters(fight)
+            ids = (5670, 5673) if index == 2 else (10000 + index * 2, 10001 + index * 2)
+            names = [fighter["name"] for fighter in fighters]
+            if index == 2:
+                names = ["Shido Boris Esperanca", "Peace Nguphane"]
+            raw.rows["fighters"].extend({"fighter_id": fid, "full_name": name}
+                                        for fid, name in zip(ids, names))
+            raw.rows["fights"].append({"fight_id": 9538 + index, "event_id": 5,
+                "fighter_a_id": ids[0], "fighter_b_id": ids[1], "fight_status": "scheduled",
+                "fighter_a": {"full_name": names[0]}, "fighter_b": {"full_name": names[1]}})
+        if duplicates:
+            raw.rows["fighters"].extend([
+                {"fighter_id": 6000, "full_name": "Shido Boris Esperança"},
+                {"fighter_id": 6001, "full_name": "Peace Nguphane"}])
+        raw.rows["fight_research"] = [{"fight_id": 9540, "bet_side": "fighter_a",
+                                      "assistant_pick": "fighter_b", "confidence": 4}]
+        raw.rows["bet_legs"] = [{"leg_id": 1, "fight_id": 9540, "bet_side": "fighter_b"}]
+        return raw, event, fights
+
+    def sdk_importer(self, raw):
+        """Run the real SDK, pagination and batch overlay over isolated records."""
+        commits = []
+
+        def transport(request):
+            if "/rpc/" in request.url.path:
+                name = request.url.path.rsplit("/", 1)[-1]
+                args = json.loads(request.content)
+                if name == "mma_apply_import_batch":
+                    commits.append(deepcopy(args))
+                return httpx.Response(200, json=raw.rpc(name, args).execute().data)
+            table = request.url.path.rsplit("/", 1)[-1]
+            rows = deepcopy(raw.rows[table])
+            params = request.url.params
+            for key, value in params.multi_items():
+                if value.startswith("eq."):
+                    rows = [r for r in rows if str(r.get(key)) == value[3:]]
+            if table == "fights":
+                fighters = {r["fighter_id"]: r for r in raw.rows["fighters"]}
+                for row in rows:
+                    for side in ("fighter_a", "fighter_b"):
+                        row[side] = {"full_name": fighters[row[side + "_id"]]["full_name"]}
+            order = params.get("order")
+            if order:
+                key = order.split(",")[-1].split(".")[0]
+                rows.sort(key=lambda r: r[key])
+            start = int(params.get("offset", "0"))
+            limit = min(int(params.get("limit", "500")), 2)  # Exercise server row caps.
+            return httpx.Response(200, json=rows[start:start + limit])
+
+        http = httpx.Client(transport=httpx.MockTransport(transport))
+        self.addCleanup(http.close)
+        client = SyncPostgrestClient("https://example.invalid", http_client=http)
+        importer = OfficialPflImporter(AtomicImportClient(client))
+        self.addCleanup(importer.clear_lookup_caches)
+        return importer, commits
+
+    def test_full_existing_card_attaches_source_ids_without_changing_saved_fighter_names(self):
+        raw, event, fights = self.saved_card()
+        before = deepcopy(raw.rows)
+        importer, commits = self.sdk_importer(raw)
+        saved, results = import_card(importer, event, fights)
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(saved["unconfirmed_omissions"], [])
+        self.assertEqual(len(results), 11)
+        self.assertEqual(raw.rows["fighters"], before["fighters"])
+        self.assertEqual(raw.rows["fight_research"], before["fight_research"])
+        self.assertEqual(raw.rows["bet_legs"], before["bet_legs"])
+        expected = [(r["fight_id"], r["fighter_a_id"], r["fighter_b_id"]) for r in before["fights"]]
+        self.assertEqual(expected, [(r["fight_id"], r["fighter_a_id"], r["fighter_b_id"]) for r in raw.rows["fights"]])
+        links = {r["external_id"]: r["internal_id"] for r in raw.rows["external_ids"]}
+        self.assertEqual(links["pfl-fighter:866"], 5670)
+        self.assertEqual(links["pfl-fighter:1160"], 5673)
+        self.assertEqual(links["pfl-fight:pfl-morocco:10851"], 9540)
+        self.assertTrue(all(r["fight_status"] in {"completed", "no_contest"} for r in raw.rows["fights"]))
+
+    def test_accented_duplicates_reuse_the_saved_pair_after_reversal_and_repeat_imports(self):
+        raw, event, fights = self.saved_card(duplicates=True)
+        before = deepcopy(raw.rows)
+        importer, commits = self.sdk_importer(raw)
+        fights[2]["competitors"].reverse()
+        for index, slot in enumerate(fights[2]["competitors"], 1):
+            slot["order"] = index
+        for _ in range(2):
+            import_card(importer, event, fights)
+        self.assertEqual(len(commits), 2)
+        self.assertEqual(raw.rows["fighters"], before["fighters"])
+        self.assertEqual(raw.rows["fight_research"], before["fight_research"])
+        self.assertEqual(raw.rows["bet_legs"], before["bet_legs"])
+        bout = next(r for r in raw.rows["fights"] if r["fight_id"] == 9540)
+        self.assertEqual((bout["fighter_a_id"], bout["fighter_b_id"]), (5670, 5673))
+        self.assertEqual(len(raw.rows["fights"]), 11)
+
+    def test_conflicting_fighter_mapping_keeps_the_entire_previous_card(self):
+        raw, event, fights = self.saved_card(duplicates=True)
+        raw.rows["external_ids"].append({"entity_type": "fighter", "source_id": 77,
+                                        "external_id": "pfl-fighter:1160", "internal_id": 6001})
+        before = deepcopy(raw.rows)
+        importer, commits = self.sdk_importer(raw)
+        with self.assertRaisesRegex(FightIdentityError, "maps to #6001.*uses #5673"):
+            import_card(importer, event, fights)
+        self.assertEqual(commits, [])
+        self.assertEqual(raw.rows, before)
+
+    def test_single_fight_checks_both_source_mappings_before_attaching_either(self):
+        raw, _, fights = self.saved_card(duplicates=True)
+        raw.rows["external_ids"].append({"entity_type": "fighter", "source_id": 77,
+                                        "external_id": "pfl-fighter:1160", "internal_id": 6001})
+        before = deepcopy(raw.rows)
+        importer = OfficialPflImporter(raw)
+        self.addCleanup(importer.clear_lookup_caches)
+        with self.assertRaisesRegex(FightIdentityError, "maps to #6001.*uses #5673"):
+            importer.import_fight(5, fights[2], 3)
+        self.assertEqual(raw.rows, before)
+
+    def test_new_card_still_creates_and_commits_all_fighter_identities(self):
+        raw = database()
+        _, metadata, payload = fixtures()
+        event, fights = normalize_card(ENTRY, metadata, payload)
+        importer, commits = self.sdk_importer(raw)
+        saved, results = import_card(importer, event, fights)
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(saved["unconfirmed_omissions"], [])
+        self.assertEqual(len(results), 11)
+        self.assertEqual(len(raw.rows["fighters"]), 22)
+        self.assertEqual(len(raw.rows["fights"]), 11)
+        self.assertTrue(all(r["fight_id"] > 0 for r in results))
+        self.assertTrue(all(r["internal_id"] > 0 for r in raw.rows["external_ids"]))
+
+    def test_conflict_on_the_last_fight_discards_all_staged_changes(self):
+        raw, event, fights = self.saved_card()
+        fighter = shared.fighters(fights[-1])[1]
+        raw.rows["fighters"].append({"fighter_id": 13000, "full_name": fighter["name"]})
+        raw.rows["external_ids"].append({"entity_type": "fighter", "source_id": 77,
+                                        "external_id": fighter["external_id"], "internal_id": 13000})
+        before = deepcopy(raw.rows)
+        importer, commits = self.sdk_importer(raw)
+        with self.assertRaisesRegex(FightIdentityError, "fighter source mapping"):
+            import_card(importer, event, fights)
+        self.assertEqual(commits, [])
+        self.assertEqual(raw.rows, before)
+
+    def test_two_different_saved_pairs_with_the_same_names_require_review(self):
+        raw, event, fights = self.saved_card(duplicates=True)
+        raw.rows["fights"].append({"fight_id": 13000, "event_id": 5,
+            "fighter_a_id": 6000, "fighter_b_id": 6001, "fight_status": "scheduled"})
+        before = deepcopy(raw.rows)
+        importer, commits = self.sdk_importer(raw)
+        with self.assertRaisesRegex(FightIdentityError, "multiple saved fighter pairs"):
+            import_card(importer, event, fights)
+        self.assertEqual(commits, [])
+        self.assertEqual(raw.rows, before)
+
+    def test_a_changed_opponent_cannot_reuse_a_mapped_historical_fight(self):
+        raw, event, fights = self.saved_card()
+        raw.rows["external_ids"].append({"entity_type": "fight", "source_id": 77,
+            "external_id": "pfl-fight:pfl-morocco:10851", "internal_id": 9540})
+        fights[2]["competitors"][1]["athlete"].update(id="pfl-fighter:999999", displayName="Replacement Fighter")
+        before = deepcopy(raw.rows)
+        importer, commits = self.sdk_importer(raw)
+        with self.assertRaisesRegex(FightIdentityError, "different stored participants"):
+            import_card(importer, event, fights)
+        self.assertEqual(commits, [])
+        self.assertEqual(raw.rows, before)
+
+    def test_a_conflicting_fight_source_mapping_is_not_redirected(self):
+        raw, event, fights = self.saved_card()
+        raw.rows["external_ids"].append({"entity_type": "fight", "source_id": 77,
+            "external_id": "pfl-fight:pfl-morocco:10851", "internal_id": 9538})
+        before = deepcopy(raw.rows)
+        importer, commits = self.sdk_importer(raw)
+        with self.assertRaisesRegex(FightIdentityError, "fight source ID points to another"):
+            import_card(importer, event, fights)
+        self.assertEqual(commits, [])
+        self.assertEqual(raw.rows, before)
+
+    def test_dry_run_does_not_attach_source_ids_or_change_saved_data(self):
+        raw, event, fights = self.saved_card(duplicates=True)
+        before = deepcopy(raw.rows)
+        importer, commits = self.sdk_importer(raw)
+        import_card(importer, event, fights, dry_run=True)
+        self.assertEqual(commits, [])
+        self.assertEqual(raw.rows, before)
 
 
 class ClientTests(unittest.TestCase):
