@@ -26,6 +26,7 @@ from bet_bridge import bet_payloads, fetch_bets
 from state_store import load_state, save_state
 from snapshot_merge import merge_external
 from database_snapshot import SnapshotReader,publisher_lease
+from card_disputes import readiness_contract, event_disputes, fight_disputes, dispute_note
 
 ALIASES = {
     "ufc": "ufc", "ultimate fighting championship": "ufc",
@@ -242,11 +243,11 @@ class DatabaseReader:
             if isinstance(summary,str):
                 try: summary=json.loads(summary)
                 except ValueError: summary={}
-            ready=summary.get("publication_readiness") or {}
-            if state in {"success", "partial"} and row.get("finished_at") and summary.get("publishable") is True and ready.get("schema_version")==2 and ready.get("ready") is True:
+            ready=readiness_contract(summary)
+            if state in {"success", "partial"} and row.get("finished_at") and summary.get("publishable") is True and ready and ready.get("ready") is True:
                 return row
             if state in {"success", "partial"}:
-                raise SetupError("Today's refresh did not verify all card sources. Discord kept its previous snapshot; run a full daily refresh with the matching dashboard release.")
+                raise SetupError("Today's refresh is not ready for this bot. Run a full daily refresh with the matching dashboard and Discord releases; card disputes will then be shown on the posts.")
             if state == "failed":
                 raise SetupError("Today's dashboard refresh failed. Discord kept its previous snapshot and will retry in one hour.")
             if time.monotonic() >= deadline:
@@ -260,12 +261,27 @@ def batches(values, size=80):
     return [values[i:i + size] for i in range(0, len(values), size)]
 
 
-def fetch_data(reader, now, previous):
+def fetch_data(reader, now, previous, *, require_ready=True):
     start, end = week_window(now)
+    review = {}
     if isinstance(reader,DatabaseReader):
+        daily = reader.latest_daily_sync(now)
+        summary = (daily or {}).get("summary") or {}
+        if isinstance(summary, str):
+            summary = json.loads(summary)
+        review = readiness_contract(summary) or {}
+        if require_ready and (not daily or not daily.get("finished_at")
+                or daily.get("status") not in {"success", "partial"}
+                or summary.get("publishable") is not True or review.get("ready") is not True):
+            raise SetupError("The latest full dashboard refresh is not ready. Finish a matching daily refresh before publishing.")
         pending=[int(eid) for eid,item in previous.get("events",{}).items() if not item.get("archived")]
         tables=reader.control_rpc("mma_discord_snapshot",{"p_start":(start-timedelta(days=2)).isoformat(),
             "p_end":(end+timedelta(days=2)).isoformat(),"p_pending":pending})
+        after = reader.latest_daily_sync(now)
+        if fingerprint(daily) != fingerprint(after):
+            raise SetupError("Dashboard data changed while reading the card. Retry after the refresh finishes.")
+        if not review and daily:
+            raise SetupError("Install the matching dashboard and bot updates, then run a full daily refresh.")
         reader=SnapshotReader(tables,reader.bet_owner_id)
     events = reader.rows("events", [("select", EVENT_COLUMNS),
         ("event_date", "gte." + (start - timedelta(days=2)).isoformat()),
@@ -283,7 +299,8 @@ def fetch_data(reader, now, previous):
     fights = []
     for batch in batches(wanted_ids):
         fights.extend(reader.rows("fights", [("select", FIGHT_COLUMNS), ("event_id", "in.(" + ",".join(batch) + ")")]))
-    result = {"events": eligible, "fights": fights, "odds": [], "research": [], "links": [], "warnings": []}
+    result = {"events": eligible, "fights": fights, "odds": [], "research": [], "links": [], "warnings": [],
+              "card_disputes": review.get("disputes", []), "checked_event_ids": review.get("checked_event_ids", [])}
     optional = [
         ("odds", [str(f["fight_id"]) for f in fights], "fight_id", "odds_id,fight_id,fighter_id,sportsbook,sportsbook_key,american_odds,recorded_at"),
         ("external_ids", wanted_ids, "internal_id", "internal_id,external_url"),
@@ -558,7 +575,7 @@ def event_topic(event):
     return f"{event['event_name'][:180]} | Card, results, odds and My Bets | Card reference {event['event_id']}"
 
 
-def header_payload(event, links, override):
+def header_payload(event, links, override, disputes=()):
     day = local_day(event)
     location = ", ".join(str(event[k]) for k in ("city", "state_region", "country") if event.get(k)) or "Location TBA"
     fields = [
@@ -576,7 +593,10 @@ def header_payload(event, links, override):
             host = (urlparse(url).hostname or "Source").removeprefix("www.")
             return {"tapology.com": "Tapology", "espn.com": "ESPN", "ufc.com": "UFC", "onefc.com": "ONE"}.get(host, host)
         fields.append({"name": "Event links", "value": "\n".join(f"[{link_label(url)}](<{url}>)" for url in source_links[:5] if len(url) < 175)})
-    payload = embed_pages("🗓️ " + event["event_name"], f"**{promotion(event).upper()}** • {status(event.get('event_status')).title()}", fields,
+    description = f"**{promotion(event).upper()}** • {status(event.get('event_status')).title()}"
+    if disputes:
+        description += "\n\n" + dispute_note(disputes)
+    payload = embed_pages("🗓️ " + event["event_name"] + (" *" if disputes else ""), description, fields,
                           footer="Updated " + ct_time(event.get("updated_at")))[0]
     poster = safe_url(override.get("poster_url"))
     if poster:
@@ -584,18 +604,23 @@ def header_payload(event, links, override):
     return payload
 
 
-def card_payloads(fights, history=None):
+def card_payloads(fights, history=None, disputes=()):
     fields = []
     for index, fight in enumerate(sorted(fights, key=lambda f: (f.get("fight_order") is None, f.get("fight_order") or 0, int(f["fight_id"]))), 1):
         names = ((fight.get("fighter_a") or {}).get("full_name") or "Fighter TBA", (fight.get("fighter_b") or {}).get("full_name") or "Fighter TBA")
         marker = " • CANCELLED" if status(fight.get("fight_status")) == "cancelled" else ""
+        review = fight_disputes(fight, disputes)
+        if review:
+            marker += " *"
         block = f"{names[0]} vs {names[1]}"
+        if review:
+            block += "\n" + dispute_note(review)
         if result_text(fight):
             block += "\n✅ **" + result_text(fight) + "**"
         fields.append({"name": f"Fight {index}{marker}", "value": block})
     if not fights:
         fields.append({"name": "Card pending", "value": "The fight card is awaiting confirmation."})
-    pages = embed_pages("🥊 Fight card", "", fields, footer="MMA FightCenter", per_page=25)
+    pages = embed_pages("🥊 Fight card" + (" *" if disputes else ""), dispute_note(disputes), fields, footer="MMA FightCenter", per_page=25)
     embeds = [embed for page in pages for embed in page["embeds"]]
     for embed in embeds:
         embed["footer"]["text"] = "MMA FightCenter"
@@ -608,8 +633,9 @@ def card_payloads(fights, history=None):
     return [{"content": "", "embeds": embeds}]
 
 
-def snapshot(event, fights, history):
+def snapshot(event, fights, history, disputes=()):
     return {"event_status": status(event.get("event_status")), "day": str(local_day(event)),
+            "data_disputes": deepcopy(list(disputes)),
             "fights": {str(f["fight_id"]): {"matchup": matchup(f), "status": status(f.get("fight_status")),
                                          "result": result_text(f), "order": f.get("fight_order")} for f in fights},
             "prices": {key: {"price": pair["latest"]["american_odds"], "at": pair["latest"]["recorded_at"],
@@ -651,6 +677,9 @@ def changes(before, after, fights, price_anchors=None):
     if not before:
         return []
     notes = []
+    if before.get("data_disputes", []) != after.get("data_disputes", []):
+        notes.append("Data dispute: saved card information needs review; affected matchups are marked *."
+                     if after.get("data_disputes") else "Data dispute cleared: the latest source check resolved the card differences.")
     if before.get("day") != after["day"]:
         notes.append(f"Event date changed: {before.get('day')} → {after['day']}.")
     if before.get("event_status") != after["event_status"]:
@@ -686,7 +715,8 @@ def changes(before, after, fights, price_anchors=None):
 def change_payloads(notes, now, revised_card=None):
     groups = {}
     for note in notes:
-        title = ("📈 Big odds swing" if note.startswith("Line movement") else
+        title = ("⚠️ Data review" if note.startswith("Data dispute") else
+                 "📈 Big odds swing" if note.startswith("Line movement") else
                  "✅ Results" if re.search(r" — (?:Winner:|Draw\b|No contest\b|Result awaiting)", note) else
                  "🔄 Card changes" if note.startswith(("Event date", "Event status", "Added", "Cancelled", "Matchup changed", "Absent", "Not listed", "Fight order")) else
                  "📰 News")
@@ -986,14 +1016,15 @@ def publish_bets(publisher, eid, channel_id, records):
 
 
 def publish_event(publisher, event, fights, now, history=None, links=None, override=None, *,
-                  alert_prices=True, reset_prices=False, bets=None):
+                  alert_prices=True, reset_prices=False, bets=None, disputes=None):
     eid = str(event["event_id"])
     channel = publisher.event_channel(event)
     item = publisher.state["events"][eid]
+    disputes = item.get("data_disputes", []) if disputes is None else disputes
     links = links if links is not None else item.get("source_links", [])
     history = history if history is not None else item.get("odds_history", {})
-    publisher.post("event:" + eid + ":header", channel["id"], header_payload(event, links, override or {}), pinned=True)
-    payloads = card_payloads(fights, history)
+    publisher.post("event:" + eid + ":header", channel["id"], header_payload(event, links, override or {}, disputes), pinned=True)
+    payloads = card_payloads(fights, history, disputes)
     if item.get("external_card"):
         source = item["external_card"]
         for payload in payloads:
@@ -1003,7 +1034,7 @@ def publish_event(publisher, event, fights, now, history=None, links=None, overr
     publisher.post("event:" + eid + ":news-guide", channel["id"], {"content": "", "embeds": [{"title": "🔄 Refresh this event", "color": 0xDDA344,
                    "description": "🥊 **/refreshfight** · Fetch this card and its published results.\n📈 **/refreshodds** · Fetch fresh prices and flag big swings.\n\n"
                                   "Big swings use a five-percentage-point change in implied probability."}]})
-    after = snapshot(event, fights, history)
+    after = snapshot(event, fights, history, disputes)
     anchors = {} if reset_prices else item.get("price_anchors", (item.get("snapshot") or {}).get("prices", {}))
     notes = changes(item.get("snapshot"), after, fights, anchors if alert_prices else after["prices"])
     if notes:
@@ -1017,6 +1048,7 @@ def publish_event(publisher, event, fights, now, history=None, links=None, overr
         key = "event:" + eid + ":news:" + fingerprint([stable(item.get("snapshot")), stable(after)])[:20]
         publisher.block(key, channel["id"], change_payloads(notes, now, revised_card=payloads))
     item.update(event=event, fights=deepcopy(fights), snapshot=after, odds_history=history,
+                data_disputes=deepcopy(list(disputes)),
                 source_links=links, price_anchors=next_price_anchors(anchors, after["prices"], fights))
     publisher.save()
     return notes
@@ -1080,7 +1112,8 @@ def publish_cycle(publisher, data, now, overrides=None):
         event_history = ({key: value for key, value in history.items() if key.split(":", 1)[0] in fight_ids}
                          if data.get("odds") is not None else None)
         publish_event(publisher, event, fights, now, event_history, links, (overrides or {}).get(eid, {}),
-                      alert_prices=False, bets=(data.get("bets") or {}).get(eid) if eid in active_ids else None)
+                      alert_prices=False, bets=(data.get("bets") or {}).get(eid) if eid in active_ids else None,
+                      disputes=event_disputes(data, publisher.state, event, fights))
         item.update(archived=False, week_start=start.isoformat())
         publisher.save()
     # Only dated past cards are moved. Missing source rows and live events are retained.
@@ -1101,9 +1134,10 @@ def publish_cycle(publisher, data, now, overrides=None):
     for event in active:
         item = publisher.state["events"][str(event["event_id"])]
         override = (overrides or {}).get(str(event["event_id"]), {})
-        index.append({"name": "🥊 " + event["event_name"], "value":
+        index.append({"name": "🥊 " + event["event_name"] + (" *" if item.get("data_disputes") else ""), "value":
                       f"🕒 {ct_time(event.get('event_start_time'))}\n📺 {override.get('watch_platform') or event.get('watch_platform') or 'Broadcast TBA'}\n"
-                      f"{status(event.get('event_status')).title()} • Open card: <#{item['channel_id']}>"})
+                      f"{status(event.get('event_status')).title()} • Open card: <#{item['channel_id']}>"
+                      + ("\n⚠️ Data dispute — see marked matchups." if item.get("data_disputes") else "")})
     if not active:
         index.append({"name": "No cards listed", "value": "No events from the tracked promotions are currently imported for this week."})
     retained = [(eid, item) for eid, item in publisher.state["events"].items()
@@ -1111,7 +1145,9 @@ def publish_cycle(publisher, data, now, overrides=None):
     if retained:
         for eid, item in retained:
             label = item.get("event", {}).get("event_name") or "Card reference " + eid
-            index.append({"name": "📌 Preserved • " + label, "value": f"Live, rescheduled or awaiting source confirmation.\nOpen card: <#{item['channel_id']}>"})
+            index.append({"name": "📌 Preserved • " + label + (" *" if item.get("data_disputes") else ""),
+                          "value": f"Live, rescheduled or awaiting source confirmation.\nOpen card: <#{item['channel_id']}>"
+                          + ("\n⚠️ Data dispute — awaiting review." if item.get("data_disputes") else "")})
     publisher.block("weekly-index", publisher.setup["channels"]["this-week"],
                     embed_pages("📅 This week", f"{start.strftime('%b %d').replace(' 0', ' ')} – {(end - timedelta(days=1)).strftime('%b %d').replace(' 0', ' ')} • Central Time", index),
                     pin_first=True, seed=publisher.setup["messages"].get("this-week"), prune=True)
@@ -1188,7 +1224,7 @@ def main():
         previous = load_state(path)
         if not args.preview:
             reader.wait_for_daily_sync(now)
-        data = fetch_data(reader, now, previous)
+        data = fetch_data(reader, now, previous, require_ready=not args.preview)
         if args.preview:
             start, end = week_window(now)
             print(f"Preview: {start} through {end - timedelta(days=1)} (Central Time)")

@@ -202,10 +202,11 @@ class HandshakeTests(unittest.TestCase):
             "finished_at": NOW.isoformat(),
             "summary": {"run_mode": "daily", "requested_scope": "all"},
         }
-        with self.assertRaisesRegex(SetupError, "did not verify"):
+        with self.assertRaisesRegex(SetupError, "not ready"):
             self.reader(row).wait_for_daily_sync(NOW, timeout_seconds=0)
         row["summary"].update(
-            publishable=True, publication_readiness={"schema_version": 2, "ready": True}
+            publishable=True, publication_readiness={"schema_version": 3, "ready": True,
+                                                    "disputes": [], "checked_event_ids": []}
         )
         self.assertEqual(
             self.reader(row).wait_for_daily_sync(NOW, timeout_seconds=0), row

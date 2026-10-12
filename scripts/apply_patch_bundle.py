@@ -16,7 +16,17 @@ def digest(path):
 
 
 def dashboard_folder(path):
+    return installation_folder(path, "dashboard")
+
+
+def installation_folder(path, component):
     root = Path(path).expanduser().resolve()
+    if component == "companion":
+        if not all((root / name).is_file() for name in ("sync_discord.py", "run_bot.py", "provider_runtime.py")):
+            raise ValueError("Choose your working Discord bot folder containing 05, 06, sync_discord.py, and run_bot.py.")
+        return root
+    if component != "dashboard":
+        raise ValueError("The patch names an unsupported project component.")
     try:
         version = json.loads((root / "package.json").read_text())["version"]
     except (OSError, ValueError, KeyError) as error:
@@ -30,7 +40,7 @@ def relative_file(value):
     path = PurePosixPath(value)
     if (path.is_absolute() or not path.parts or ".." in path.parts or "\\" in value
             or ":" in value or any(part.lower().startswith(".env") for part in path.parts)
-            or not (path.parts[0] in {"api", "scripts"} or (len(path.parts) == 1 and path.suffix == ".md"))):
+            or not (path.parts[0] in {"api", "scripts", "supabase"} or (len(path.parts) == 1 and path.suffix in {".md", ".py"}))):
         raise ValueError("The patch contains an unsupported file path.")
     return Path(*path.parts)
 
@@ -57,7 +67,7 @@ def replace_bytes(target, data):
 def restore_patch(backup, only=None):
     backup = Path(backup).resolve()
     record = json.loads((backup / "RESTORE.json").read_text())
-    root = dashboard_folder(record["dashboard"])
+    root = installation_folder(record["dashboard"], record.get("component", "dashboard"))
     files = record["files"] if only is None else {name: record["files"][name] for name in only}
     changes = []
     # Verify every selected file before restoring anything. Later user edits
@@ -82,10 +92,10 @@ def restore_patch(backup, only=None):
     return root
 
 
-def install_patch(bundle, dashboard):
+def validate_patch(bundle, dashboard):
     bundle = Path(bundle).resolve()
-    root = dashboard_folder(dashboard)
     manifest = json.loads((bundle / "PATCH-MANIFEST.json").read_text())
+    root = installation_folder(dashboard, manifest.get("component", "dashboard"))
     payload = bundle / "payload"
     changes = []
     for name, item in manifest["files"].items():
@@ -99,12 +109,18 @@ def install_patch(bundle, dashboard):
         if before not in item["allowed_before"]:
             raise ValueError(f"This file differs from the supported releases; nothing was changed: {name}")
         changes.append((name, relative, source, target, before, item["sha256"]))
+    return root, manifest, changes
+
+
+def install_patch(bundle, dashboard):
+    root, manifest, changes = validate_patch(bundle, dashboard)
     if not changes:
         return None
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     backup = root.parent / "MMA-patch-backups" / ("mma-patch-" + stamp)
     backup.mkdir(parents=True)
-    record = {"dashboard": str(root), "patch": manifest["patch"], "files": {}}
+    record = {"dashboard": str(root), "component": manifest.get("component", "dashboard"),
+              "patch": manifest["patch"], "files": {}}
     for name, relative, source, target, before, after in changes:
         if before is not None:
             destination = within(backup / "files", relative)

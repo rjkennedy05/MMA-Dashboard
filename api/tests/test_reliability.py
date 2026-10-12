@@ -264,7 +264,7 @@ class ReadinessTests(unittest.TestCase):
         summary["provider_runs"]["bkfc"]["status"] = "partial"
         self.assertFalse(finalize_readiness(summary, self.args())["publishable"])
 
-    def test_a_missing_official_near_term_event_blocks_publication(self):
+    def test_a_missing_official_near_term_card_posts_with_a_review_warning(self):
         summary = self.summary()
         summary["quality_audit"]["issues"] = [
             {
@@ -272,7 +272,9 @@ class ReadinessTests(unittest.TestCase):
                 "event_date": datetime.now(timezone.utc).date().isoformat(),
             }
         ]
-        self.assertFalse(finalize_readiness(summary, self.args())["publishable"])
+        self.assertTrue(finalize_readiness(summary, self.args())["publishable"])
+        self.assertEqual(summary["publication_readiness"]["schema_version"], 3)
+        self.assertEqual(summary["publication_readiness"]["disputes"][0]["code"], "DETAIL_SOURCE_GAP")
 
 
 class IdentityAndCoverageTests(unittest.TestCase):

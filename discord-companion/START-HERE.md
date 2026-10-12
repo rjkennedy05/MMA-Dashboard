@@ -1,4 +1,4 @@
-# MMA Discord Companion 6.2
+# MMA Discord Companion 6.3
 
 Use this bot with **dashboard 12.1.0 / provider core 1.1** and the working
 database upgraded through migration 035. It uses the dashboard's provider clients
@@ -17,8 +17,21 @@ and parsers. Keep your existing server and bot.
    locked packages and browser support. Run 04 if the dashboard folder changed.
 5. Run a full daily dashboard refresh. Then run 05 and start 06; wait for READY.
 
-05 follows the same verified-daily-refresh handshake as the automatic job.
-It keeps previous posts if the dashboard cannot verify all required cards.
+05 follows the same completed-daily-refresh handshake as the automatic job.
+Cards with source differences can post with visible data dispute markers. The
+event header, affected fights and weekly index show an asterisk and a review
+note. Missing matchups retain their saved status, bets and research. Markers
+clear after a fresh source check resolves the difference; cached or unchecked
+cards retain their prior markers. Updates and resolutions appear in card news.
+
+This version needs the matching dashboard data-dispute update (readiness schema
+3). The paired `MMA-personal-data-disputes-1.zip` installer updates both working
+folders and backs up changed source automatically. No new SQL or dependencies
+are required when upgrading 12.1.0 / companion 6.2 through that installer.
+Run a full daily dashboard refresh after installation, then 05 and 06.
+
+It keeps previous posts if the full refresh fails, its audit cannot finish, or
+the database snapshot changes during the read.
 The automatic job begins after 8 AM Central Time, and the long dashboard wait
 allows commands to remain available.
 

@@ -1,7 +1,9 @@
 # Personal reliability 12.1.0
 
 This is a source release for the existing personal dashboard and Discord bot.
-The screen layout stays familiar. It requires the paired Discord 6.2 release,
+The screen layout stays familiar. The original reliability release pairs with
+Discord 6.2. The later [data dispute update](DATA-DISPUTES-1.md) pairs with Discord
+6.3 and allows marked card differences to post. This installation requires
 provider core 1.1, Node 24, Python 3.12, and database migrations through 035.
 
 The original dashboard v12 and Discord v6.1 uploads remain preserved at Git tag

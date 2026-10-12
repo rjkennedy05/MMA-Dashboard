@@ -80,11 +80,14 @@ def sync_pfl_cards(args, summary, supabase, should_refresh, mark_refreshed):
         for entry in targets:
             if entry["external_id"] not in verified_ids:
                 summary["catalog_issues"].append({"code": "DETAIL_SOURCE_GAP", "severity": "warning",
+                    "event_id": entry.get("event_id"),
                     "promotion": "PFL", "event_name": entry["name"], "event_date": entry["date"],
                     "message": "The event is missing from ESPN and its official PFL card could not be verified; prior data was retained."})
         summary["provider_runs"]["espn_mma"]["official_fallback"] = dict(summary["provider_runs"]["pfl_official"])
         if not all_events and len(verified_ids) == len(targets) and catalog.get("status") == "completed":
             summary["provider_runs"]["espn_mma"].update(status="completed", source="official_pfl_fallback")
+        elif not all_events and summary["provider_runs"]["pfl_official"].get("status") in {"completed", "partial"} and catalog.get("status") == "completed":
+            summary["provider_runs"]["espn_mma"].update(status="completed_with_gaps", source="official_pfl_fallback")
     elif not all_events and catalog.get("status") == "completed":
         summary["provider_runs"]["espn_mma"].update(status="completed", source="verified_quiet_window")
     summary["providers"]["pfl"] = ("failed" if summary["provider_runs"]["espn_mma"]["status"] == "failed" else "automatic")

@@ -1,6 +1,8 @@
 """Shared card import orchestration with all-or-nothing database commits."""
 
 from contextlib import nullcontext
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 try:
     from providers.atomic import import_batch
@@ -10,6 +12,17 @@ except ModuleNotFoundError:
     from api.providers.atomic import import_batch
     from api.providers.errors import safe_error
     from api.sync.transient_retry import run_with_transient_retry
+
+
+def card_day(event):
+    value = event.get("event_date") or event.get("date") or ""
+    try:
+        instant = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if instant.tzinfo:
+            return instant.astimezone(ZoneInfo("America/Chicago")).date().isoformat()
+    except ValueError:
+        pass
+    return str(value)[:10]
 
 
 def import_card(importer, event, fights, *, dry_run=False):
@@ -124,6 +137,7 @@ def process_cards(
                 attempts=3,
             )
             if not args.dry_run:
+                summary.setdefault("checked_event_ids", []).append(saved["event_id"])
                 if saved["status"] in {"imported", "updated"}:
                     summary["events_" + saved["status"]] += 1
                 for result in results:
@@ -143,10 +157,9 @@ def process_cards(
                 summary.setdefault("catalog_issues", []).append(
                     {
                         "code": "CARD_SOURCE_EMPTY",
+                        "event_id": saved["event_id"],
                         "event_name": label,
-                        "event_date": str(
-                            event.get("event_date") or event.get("date") or ""
-                        )[:10],
+                        "event_date": card_day(event),
                         "message": "The detail source did not verify the stored card; prior bouts were retained.",
                     }
                 )
@@ -154,22 +167,20 @@ def process_cards(
                 summary.setdefault("catalog_issues", []).append(
                     {
                         "code": "CARD_SOURCE_PLACEHOLDER",
+                        "event_id": saved["event_id"],
                         "severity": "warning",
                         "event_name": label,
-                        "event_date": str(
-                            event.get("event_date") or event.get("date") or ""
-                        )[:10],
+                        "event_date": card_day(event),
                         "message": "Some source matchups still have unresolved fighter identities; prior records were retained.",
                     }
                 )
             if saved.get("unconfirmed_omissions"):
                 issue = {
                     "code": "CARD_SOURCE_OMISSION",
+                    "event_id": saved["event_id"],
                     "severity": "warning",
                     "event_name": label,
-                    "event_date": str(
-                        event.get("event_date") or event.get("date") or ""
-                    )[:10],
+                    "event_date": card_day(event),
                     "fight_ids": saved["unconfirmed_omissions"],
                     "message": "Scheduled matchups were omitted by the source. Prior rows and bets were retained for review.",
                 }
@@ -196,7 +207,8 @@ def process_cards(
         except Exception as error:
             counts["event_errors"] += 1
             summary["errors"].append(
-                {"stage": provider_key, "context": label, "message": safe_error(error)}
+                {"stage": provider_key, "context": label, "event_date": card_day(listed),
+                 "message": safe_error(error)}
             )
             print("  CARD IMPORT KEPT PREVIOUS DATA — " + safe_error(error))
     counts["requests"] = getattr(client, "request_count", 0)

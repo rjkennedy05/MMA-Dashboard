@@ -394,9 +394,7 @@ class FallbackFlowTests(unittest.TestCase):
                 official.return_value.get_card.return_value = normalize_card(ENTRY, metadata, payload)
             sync_pfl_cards(args, summary, raw, lambda *a: True, lambda *a: None)
         summary["quality_audit"]["issues"] = list(summary["catalog_issues"])
-        with patch("api.sync.readiness.datetime") as clock:
-            clock.now.return_value = NOW
-            finalize_readiness(summary, args)
+        finalize_readiness(summary, args)
         return summary, raw
 
     def test_missing_espn_card_is_verified_and_imported_before_publication_is_ready(self):
@@ -407,12 +405,13 @@ class FallbackFlowTests(unittest.TestCase):
         self.assertEqual(summary["official_results_found"], 11)
         self.assertEqual(summary["provider_runs"]["espn_mma"]["source"], "official_pfl_fallback")
 
-    def test_unverified_fallback_retains_source_gap_and_cannot_release_discord(self):
+    def test_unverified_card_retains_source_gap_and_posts_with_review_metadata(self):
         summary, raw = self.run_flow(official_error=True)
-        self.assertFalse(summary["publishable"])
+        self.assertTrue(summary["publishable"])
         self.assertEqual(summary["catalog_issues"][0]["code"], "DETAIL_SOURCE_GAP")
         self.assertEqual(raw.rows["fights"], [])
         self.assertEqual(len(raw.rows["events"]), 1)
+        self.assertIn("CARD_IMPORT_REVIEW", {d["code"] for d in summary["publication_readiness"]["disputes"]})
 
     def test_source_failure_cannot_be_treated_as_a_quiet_catalog(self):
         args, summary, raw = self.setup_flow()
@@ -455,9 +454,7 @@ class FallbackFlowTests(unittest.TestCase):
             queried = official.return_value.get_card.call_args_list
             created = official.call_count
         summary["quality_audit"]["issues"] = list(summary["catalog_issues"])
-        with patch("api.sync.readiness.datetime") as clock:
-            clock.now.return_value = NOW
-            finalize_readiness(summary, args)
+        finalize_readiness(summary, args)
         return summary, raw, created, queried
 
     def test_only_missing_listing_uses_the_official_feed_alongside_native_cards(self):
@@ -475,7 +472,7 @@ class FallbackFlowTests(unittest.TestCase):
 
     def test_official_success_cannot_hide_a_failure_on_another_native_card(self):
         summary, raw, created, queried = self.native_flow(with_morocco=True, native_error=True)
-        self.assertFalse(summary["publishable"])
+        self.assertTrue(summary["publishable"])
         self.assertEqual(summary["provider_runs"]["espn_mma"]["status"], "partial")
         self.assertEqual(len(raw.rows["fights"]), 11)
 
