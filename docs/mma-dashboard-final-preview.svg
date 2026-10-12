@@ -1,0 +1,205 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#0b0f14"/>
+      <stop offset="1" stop-color="#111923"/>
+    </linearGradient>
+    <linearGradient id="workspaceHead" x1="0" x2="1">
+      <stop offset="0" stop-color="#321a20"/>
+      <stop offset="0.52" stop-color="#111720"/>
+      <stop offset="1" stop-color="#111720"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity=".24"/>
+    </filter>
+    <style>
+      .t{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#e5e7eb}.muted{fill:#8e9aaa}.white{fill:#f8fafc}.red{fill:#e34d4d}.eyebrow{font-size:11px;font-weight:800;letter-spacing:1.8px}.h1{font-size:41px;font-weight:800;letter-spacing:-1.8px}.h2{font-size:21px;font-weight:760}.h3{font-size:15px;font-weight:760}.body{font-size:12px}.small{font-size:10px}.tiny{font-size:9px}.bold{font-weight:750}.line{stroke:#2a3543;stroke-width:1}.input{fill:#0d1219;stroke:#334155}.panel{fill:#131922;stroke:#2a3543}.raised{fill:#19212c;stroke:#2a3543}.soft{fill:#0f141c;stroke:#2a3543}.link{fill:#111821;stroke:#2a3543}.active{fill:#e34d4d;stroke:#e34d4d}
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+
+  <g transform="translate(54 38)">
+    <text class="t red eyebrow" x="0" y="10">FIGHT WEEK WORKSPACE</text>
+    <text class="t white h1" x="0" y="54">MMA Handicapping Dashboard</text>
+    <text class="t muted body" x="1045" y="26">Research cards, compare prices, and keep every read</text>
+    <text class="t muted body" x="1045" y="44">attached to the right matchup.</text>
+
+    <rect class="panel" x="0" y="78" rx="13" width="1492" height="56"/>
+    <g class="t body bold" transform="translate(9 86)">
+      <rect class="active" x="0" y="0" rx="8" width="116" height="40"/>
+      <text class="t white" x="42" y="25">ALL</text>
+      <text class="t muted" x="170" y="25">UFC</text>
+      <text class="t muted" x="306" y="25">PFL</text>
+      <text class="t muted" x="439" y="25">ONE</text>
+      <text class="t muted" x="569" y="25">BKFC</text>
+      <text class="t muted" x="710" y="25">DWCS</text>
+      <text class="t muted" x="855" y="25">LFA</text>
+    </g>
+
+    <g transform="translate(0 151)">
+      <rect class="panel" rx="13" width="1492" height="132"/>
+      <text class="t red eyebrow" x="22" y="25">UPCOMING SCHEDULE</text>
+      <text class="t white h2" x="22" y="53">Choose a card</text>
+      <rect class="raised" x="1382" y="22" rx="15" width="84" height="27"/>
+      <text class="t muted small bold" x="1398" y="40">6 EVENTS</text>
+      <text class="t white tiny bold" x="22" y="78">UFC</text>
+      <rect class="soft" x="22" y="88" rx="8" width="1444" height="28"/>
+      <rect x="22" y="88" width="4" height="28" rx="2" fill="#e34d4d"/>
+      <text class="t muted small" x="42" y="106">AUG 8, 2026</text>
+      <text class="t white body bold" x="176" y="106">UFC Fight Night: Medić vs. Rodriguez</text>
+      <text class="t muted small" x="1268" y="106">Las Vegas, NV</text>
+    </g>
+
+    <g transform="translate(0 301)">
+      <rect class="panel" rx="13" width="292" height="645"/>
+      <text class="t red eyebrow" x="18" y="27">SELECTED EVENT</text>
+      <text class="t white h2" x="18" y="55">Fight Card</text>
+      <rect class="raised" x="206" y="19" rx="14" width="66" height="26"/>
+      <text class="t muted tiny bold" x="220" y="36">12 FIGHTS</text>
+
+      <g transform="translate(14 75)">
+        <rect fill="#24181e" stroke="#e34d4d" x="0" y="0" rx="9" width="264" height="73"/>
+        <rect fill="#e34d4d" x="0" y="0" rx="2" width="4" height="73"/>
+        <text class="t muted tiny bold" x="13" y="19">FIGHT 12 · WELTERWEIGHT</text>
+        <text class="t white body bold" x="13" y="42">Damir Medić</text><text class="t white body bold" x="222" y="42">-135</text>
+        <text class="t white body bold" x="13" y="61">Daniel Rodriguez</text><text class="t white body bold" x="222" y="61">+115</text>
+      </g>
+
+      <g class="t" transform="translate(14 157)">
+        <rect class="soft" x="0" y="0" rx="9" width="264" height="73"/>
+        <text class="muted tiny bold" x="13" y="19">FIGHT 11 · LIGHTWEIGHT</text>
+        <text class="white body bold" x="13" y="42">Fighter Three</text><text class="white body bold" x="224" y="42">-165</text>
+        <text class="white body bold" x="13" y="61">Fighter Four</text><text class="white body bold" x="225" y="61">+140</text>
+        <rect class="soft" x="0" y="82" rx="9" width="264" height="73"/>
+        <text class="muted tiny bold" x="13" y="101">FIGHT 10 · BANTAMWEIGHT</text>
+        <text class="white body bold" x="13" y="124">Fighter Five</text><text class="white body bold" x="225" y="124">+105</text>
+        <text class="white body bold" x="13" y="143">Fighter Six</text><text class="white body bold" x="224" y="143">-125</text>
+        <rect class="soft" x="0" y="164" rx="9" width="264" height="73"/>
+        <text class="muted tiny bold" x="13" y="183">FIGHT 9 · FEATHERWEIGHT</text>
+        <text class="white body bold" x="13" y="206">Fighter Seven</text><text class="white body bold" x="224" y="206">-210</text>
+        <text class="white body bold" x="13" y="225">Fighter Eight</text><text class="white body bold" x="225" y="225">+175</text>
+        <rect class="soft" x="0" y="246" rx="9" width="264" height="73"/>
+        <text class="muted tiny bold" x="13" y="265">FIGHT 8 · MIDDLEWEIGHT</text>
+        <text class="white body bold" x="13" y="288">Fighter Nine</text><text class="white body bold" x="225" y="288">+120</text>
+        <text class="white body bold" x="13" y="307">Fighter Ten</text><text class="white body bold" x="224" y="307">-140</text>
+        <rect class="soft" x="0" y="328" rx="9" width="264" height="73"/>
+        <text class="muted tiny bold" x="13" y="347">FIGHT 7 · FLYWEIGHT</text>
+        <text class="white body bold" x="13" y="370">Fighter Eleven</text><text class="white body bold" x="224" y="370">-110</text>
+        <text class="white body bold" x="13" y="389">Fighter Twelve</text><text class="white body bold" x="225" y="389">-110</text>
+      </g>
+    </g>
+
+    <g transform="translate(310 301)">
+      <rect class="panel" rx="13" width="1182" height="645"/>
+      <path d="M13 0h1156a13 13 0 0 1 13 13v93H0V13A13 13 0 0 1 13 0z" fill="url(#workspaceHead)"/>
+      <line class="line" x1="0" y1="106" x2="1182" y2="106"/>
+      <text class="t red eyebrow" x="24" y="27">MATCHUP WORKSPACE</text>
+      <text class="t white h2" x="24" y="59">Damir Medić <tspan class="muted">vs</tspan> Daniel Rodriguez</text>
+      <text class="t muted body" x="24" y="83">Welterweight  •  3 rounds</text>
+      <text class="t muted tiny bold" x="985" y="33">RESEARCH STATUS</text>
+      <rect class="input" x="985" y="43" rx="7" width="171" height="38"/>
+      <text class="t white body" x="1000" y="67">Researching</text>
+      <path d="M1135 58l5 5 5-5" fill="none" stroke="#8e9aaa"/>
+
+      <line class="line" x1="205" y1="106" x2="205" y2="645"/>
+      <line class="line" x1="906" y1="106" x2="906" y2="645"/>
+      <rect x="0" y="106" width="205" height="539" fill="#0f141c" opacity=".55"/>
+      <rect x="906" y="106" width="276" height="539" fill="#0f141c" opacity=".55"/>
+
+      <g transform="translate(18 129)">
+        <text class="t red eyebrow" x="0" y="10">LAUNCH RESEARCH</text>
+        <text class="t white h3" x="0" y="34">Quick Links</text>
+        <rect class="input" x="0" y="48" rx="8" width="169" height="34"/>
+        <rect class="raised" x="4" y="52" rx="6" width="79" height="26"/>
+        <text class="t white tiny bold" x="27" y="69">MEDIĆ</text>
+        <text class="t muted tiny bold" x="103" y="69">RODRIGUEZ</text>
+
+        <g transform="translate(0 94)">
+          <rect class="link" x="0" y="0" rx="7" width="169" height="48"/>
+          <circle cx="16" cy="24" r="6" fill="none" stroke="#8e9aaa"/><text class="t white small bold" x="31" y="20">Tapology</text><text class="t muted tiny" x="31" y="34">Record &amp; opponents</text>
+          <rect class="link" x="0" y="56" rx="7" width="169" height="48"/>
+          <circle cx="16" cy="80" r="6" fill="none" stroke="#8e9aaa"/><text class="t white small bold" x="31" y="76">ESPN</text><text class="t muted tiny" x="31" y="90">Profile &amp; stats</text>
+          <rect class="link" x="0" y="112" rx="7" width="169" height="48"/>
+          <circle cx="16" cy="136" r="6" fill="none" stroke="#8e9aaa"/><text class="t white small bold" x="31" y="132">UFCStats</text><text class="t muted tiny" x="31" y="146">Official metrics</text>
+          <rect class="link" x="0" y="168" rx="7" width="169" height="48"/>
+          <circle cx="16" cy="192" r="6" fill="none" stroke="#8e9aaa"/><text class="t white small bold" x="31" y="188">FightOdds</text><text class="t muted tiny" x="31" y="202">Line movement</text>
+          <rect class="link" x="0" y="224" rx="7" width="169" height="48"/>
+          <circle cx="16" cy="248" r="6" fill="none" stroke="#8e9aaa"/><text class="t white small bold" x="31" y="244">X / Clips</text><text class="t muted tiny" x="31" y="258">Tape &amp; current buzz</text>
+          <rect class="link" x="0" y="280" rx="7" width="169" height="48"/>
+          <circle cx="16" cy="304" r="6" fill="none" stroke="#8e9aaa"/><text class="t white small bold" x="31" y="300">YouTube</text><text class="t muted tiny" x="31" y="314">Fight tape</text>
+          <rect class="link" x="0" y="336" rx="7" width="169" height="48"/>
+          <circle cx="16" cy="360" r="6" fill="none" stroke="#8e9aaa"/><text class="t white small bold" x="31" y="356">Recent News</text><text class="t muted tiny" x="31" y="370">Camp &amp; interviews</text>
+        </g>
+      </g>
+
+      <g transform="translate(227 129)">
+        <text class="t red eyebrow" x="0" y="10">YOUR INDEPENDENT READ</text>
+        <text class="t white h3" x="0" y="34">Matchup Assessment</text>
+        <text class="t muted tiny" x="570" y="34">1 WEAK · 5 ELITE</text>
+
+        <rect class="soft" x="0" y="48" rx="8" width="657" height="220"/>
+        <rect x="0" y="48" width="657" height="34" fill="#0e141c"/>
+        <text class="t muted tiny bold" x="13" y="69">ATTRIBUTE</text>
+        <text class="t muted tiny bold" x="490" y="69">MEDIĆ</text>
+        <text class="t muted tiny bold" x="578" y="69">RODRIGUEZ</text>
+        <g class="t body">
+          <text x="13" y="103">Striking</text><text class="white bold" x="508" y="103">4</text><text class="white bold" x="607" y="103">4</text>
+          <text x="13" y="136">Wrestling</text><text class="white bold" x="508" y="136">2</text><text class="white bold" x="607" y="136">3</text>
+          <text x="13" y="169">Grappling</text><text class="white bold" x="508" y="169">2</text><text class="white bold" x="607" y="169">3</text>
+          <text x="13" y="202">Cardio</text><text class="white bold" x="508" y="202">3</text><text class="white bold" x="607" y="202">4</text>
+          <text x="13" y="235">Durability</text><text class="white bold" x="508" y="235">3</text><text class="white bold" x="607" y="235">4</text>
+          <text x="13" y="258">Experience</text><text class="white bold" x="508" y="258">3</text><text class="white bold" x="607" y="258">5</text>
+        </g>
+        <g stroke="#2a3543"><line x1="0" x2="657" y1="82" y2="82"/><line x1="0" x2="657" y1="115" y2="115"/><line x1="0" x2="657" y1="148" y2="148"/><line x1="0" x2="657" y1="181" y2="181"/><line x1="0" x2="657" y1="214" y2="214"/><line x1="0" x2="657" y1="247" y2="247"/></g>
+
+        <text class="t muted tiny bold" x="0" y="292">STYLE MATCHUP &amp; LIKELY TACTICS</text>
+        <rect class="input" x="0" y="302" rx="7" width="657" height="64"/>
+        <text class="t muted small" x="12" y="324">Range, pace, wrestling entries, defensive reactions, likely adjustments…</text>
+
+        <text class="t muted tiny bold" x="0" y="391">COMPETITION QUALITY</text>
+        <text class="t muted tiny bold" x="335" y="391">NICHE TRENDS &amp; CONTEXT</text>
+        <rect class="input" x="0" y="401" rx="7" width="322" height="66"/>
+        <rect class="input" x="335" y="401" rx="7" width="322" height="66"/>
+        <text class="t muted tiny" x="12" y="423">Best wins, relevant losses, step-up in class…</text>
+        <text class="t muted tiny" x="347" y="423">Apex, travel, short notice, layoff…</text>
+
+        <text class="t muted tiny bold" x="0" y="492">MEDIĆ: PATH TO WIN</text>
+        <text class="t muted tiny bold" x="335" y="492">RODRIGUEZ: PATH TO WIN</text>
+        <rect class="input" x="0" y="502" rx="7" width="322" height="66"/>
+        <rect class="input" x="335" y="502" rx="7" width="322" height="66"/>
+      </g>
+
+      <g transform="translate(928 129)">
+        <text class="t red eyebrow" x="0" y="10">PRICE &amp; ACTION</text>
+        <text class="t white h3" x="0" y="34">Betting Decision</text>
+        <rect class="link" x="0" y="48" rx="7" width="232" height="48"/>
+        <text class="t white small bold" x="12" y="68">Damir Medić</text><text class="t muted tiny" x="12" y="84">DraftKings</text><text class="t white h3" x="187" y="77">-135</text>
+        <rect class="link" x="0" y="104" rx="7" width="232" height="48"/>
+        <text class="t white small bold" x="12" y="124">Daniel Rodriguez</text><text class="t muted tiny" x="12" y="140">FanDuel</text><text class="t white h3" x="186" y="133">+115</text>
+
+        <text class="t muted tiny bold" x="0" y="181">CURRENT LEAN</text>
+        <rect class="input" x="0" y="191" rx="7" width="232" height="38"/>
+        <text class="t white body" x="12" y="215">Damir Medić</text>
+        <text class="t muted tiny bold" x="0" y="256">TARGET MONEYLINE</text>
+        <rect class="input" x="0" y="266" rx="7" width="232" height="38"/>
+        <text class="t white body" x="12" y="290">-125</text>
+        <text class="t muted tiny bold" x="0" y="331">CONFIDENCE</text>
+        <g class="t small bold" transform="translate(0 342)">
+          <rect class="input" x="0" y="0" rx="6" width="40" height="35"/><text class="muted" x="17" y="23">1</text>
+          <rect class="input" x="48" y="0" rx="6" width="40" height="35"/><text class="muted" x="65" y="23">2</text>
+          <rect class="active" x="96" y="0" rx="6" width="40" height="35"/><text class="white" x="113" y="23">3</text>
+          <rect class="input" x="144" y="0" rx="6" width="40" height="35"/><text class="muted" x="161" y="23">4</text>
+          <rect class="input" x="192" y="0" rx="6" width="40" height="35"/><text class="muted" x="209" y="23">5</text>
+        </g>
+        <text class="t muted tiny bold" x="0" y="404">FINAL ACTION</text>
+        <rect class="input" x="0" y="414" rx="7" width="232" height="38"/>
+        <text class="t white body" x="12" y="438">Wait for price</text>
+        <rect class="active" x="0" y="483" rx="8" width="232" height="42"/>
+        <text class="t white body bold" x="71" y="509">Save research</text>
+        <text class="t muted tiny" x="13" y="546">Notes stay attached to this matchup</text>
+        <text class="t muted tiny" x="34" y="560">whenever you reopen it.</text>
+      </g>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,10 @@
+.env
+setup-state.json
+setup-state.tmp
+__pycache__/
+.env.tmp
+sync-state.json
+sync-state.tmp
+sync.lock
+event-overrides.json
+bot-settings.json

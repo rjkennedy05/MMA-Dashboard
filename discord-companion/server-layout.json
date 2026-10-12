@@ -1,0 +1,25 @@
+{
+  "server_name": "MMA FightCenter",
+  "timezone": "America/Chicago",
+  "planned_weekly_reset": {"weekday": "Monday", "time": "06:00"},
+  "categories": [
+    {
+      "key": "promotions",
+      "name": "📚 PROMOTIONS",
+      "channels": [
+        {"key": "ufc", "name": "ufc", "label": "UFC"},
+        {"key": "dwcs", "name": "dwcs", "label": "DWCS"},
+        {"key": "lfa", "name": "lfa", "label": "LFA"},
+        {"key": "pfl", "name": "pfl", "label": "PFL"},
+        {"key": "one", "name": "one", "label": "ONE Championship"},
+        {"key": "bkfc", "name": "bkfc", "label": "BKFC"}
+      ]
+    },
+    {"key": "upcoming", "name": "📅 UPCOMING EVENTS", "channels": [
+      {"key": "this-week", "name": "this-week", "label": "This week's cards"}
+    ]},
+    {"key": "archive", "name": "🗄️ ARCHIVED EVENTS", "channels": [
+      {"key": "archive-index", "name": "archive-index", "label": "Past cards"}
+    ]}
+  ]
+}

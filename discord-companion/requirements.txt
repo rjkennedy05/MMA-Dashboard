@@ -1,0 +1,5 @@
+tzdata>=2025.2
+discord.py>=2.6.4,<3
+requests>=2.32,<3
+beautifulsoup4>=4.12,<5
+playwright>=1.50,<2
