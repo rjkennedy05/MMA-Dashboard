@@ -7,6 +7,7 @@ from functools import lru_cache
 from typing import Any
 
 from . import normalizer
+from ..fight_identity import preserve_fight_identity
 
 
 SOURCE_NAME = "ONE Championship Official"
@@ -352,6 +353,7 @@ class OneChampionshipImporter:
 
         if mapping:
             fight_id = int(mapping["internal_id"])
+            fight_data = preserve_fight_identity(self.supabase, fight_id, fight_data)
             response = (
                 self.supabase.table("fights")
                 .update(fight_data)
@@ -376,6 +378,7 @@ class OneChampionshipImporter:
             fight_id = int(response.data[0]["fight_id"])
             status = "imported"
         else:
+            fight_data = preserve_fight_identity(self.supabase, fight_id, fight_data)
             response = (
                 self.supabase.table("fights")
                 .update(fight_data)

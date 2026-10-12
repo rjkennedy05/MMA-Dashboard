@@ -7,6 +7,7 @@ from functools import lru_cache
 from typing import Any
 
 from . import normalizer
+from ..fight_identity import preserve_fight_identity
 
 
 SOURCE_NAME = "ESPN MMA"
@@ -610,6 +611,7 @@ class EspnMmaImporter:
         if mapping:
             mapped_fight_id = int(mapping["internal_id"])
             fight_id = existing_fight_id or mapped_fight_id
+            fight_data = preserve_fight_identity(self.supabase, fight_id, fight_data)
             if fight_id != mapped_fight_id:
                 (
                     self.supabase.table("external_ids")
@@ -644,6 +646,7 @@ class EspnMmaImporter:
             fight_id = int(response.data[0]["fight_id"])
             status = "imported"
         else:
+            fight_data = preserve_fight_identity(self.supabase, fight_id, fight_data)
             response = (
                 self.supabase.table("fights")
                 .update(fight_data)

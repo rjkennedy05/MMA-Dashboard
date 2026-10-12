@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
+# Standalone UFCStats launchers put only this directory on sys.path.
+API_ROOT = Path(__file__).resolve().parents[1]
+if str(API_ROOT) not in sys.path:
+    sys.path.insert(0, str(API_ROOT))
+
+from providers.fight_identity import preserve_fight_identity
 from fighter_importer import import_fighter
 from fight_detail_scraper import scrape_fight_detail
 from matching import matching_fight_id
@@ -374,6 +382,7 @@ def import_fight(
             existing["internal_id"]
         )
 
+        fight_data = preserve_fight_identity(supabase, fight_id, fight_data)
         response = (
             supabase
             .table("fights")
@@ -431,6 +440,7 @@ def import_fight(
         int(fight_data["fighter_b_id"]),
     )
     if existing_fight_id is not None:
+        fight_data = preserve_fight_identity(supabase, existing_fight_id, fight_data)
         response = (
             supabase
             .table("fights")

@@ -1,4 +1,10 @@
-# MMA FightCenter — Phase 8 v12
+# MMA FightCenter — Phase 8 v12.0.1
+
+Personal reliability patch **12.0.1** protects the fighter selections attached
+to existing singles, parlay legs, research and AI picks when providers reverse
+their fighter order. See `IMPLEMENTATION-01-BET-IDENTITY.md` for the baseline,
+verification, upgrade steps, limitations and rollback. Discord v6.1 and
+provider-core 1.0 remain compatible.
 
 MMA FightCenter is a desktop-first research and betting workspace for UFC,
 DWCS, PFL, ONE, BKFC, and LFA. It combines current fight cards, fighter career
@@ -49,15 +55,18 @@ deleted. Historical RIZIN tickets remain available in Results & ROI.
 
 ## Install or upgrade
 
-See `UPGRADE-PHASE8-V12.md` for the exact v11.2-to-v12 sequence. One new,
-repeat-safe Supabase migration is required:
+See `UPGRADE-PHASE8-V12.md` for the v11.2-to-v12 sequence, then follow
+`IMPLEMENTATION-01-BET-IDENTITY.md` for this patch. The two migrations are:
 
 ```text
 supabase/migrations/202610050030_add_event_catalog_sources.sql
+supabase/migrations/202610120031_protect_fight_identity.sql
 ```
 
-For a fresh installation, run every migration in filename order. For an
-existing v11.2 installation, run only migration `030`.
+An existing v12 installation needs only migration `031`; an existing v11.2
+installation needs `030`, then `031`. A fresh database also requires the
+original core schema, which is not included in these incremental migrations.
+After restoring that schema, apply migrations in filename order.
 
 Create/copy these private files locally; they are intentionally not packaged:
 
@@ -176,6 +185,8 @@ npm run test:catalog
 npm run test:odds
 npm run test:history
 npm run test:retention
+npm run test:identity
+npm run test:database
 python -m compileall -q api
 ```
 
