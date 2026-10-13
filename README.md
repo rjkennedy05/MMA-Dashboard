@@ -2,8 +2,11 @@
 
 This release strengthens imports, saved bets, odds freshness, Discord
 synchronization, and automatic jobs while keeping the existing dashboard layout.
-It pairs with **Discord Companion 6.2 / provider core 1.1** and the existing
-Supabase database upgraded through migration 035.
+The current repair checkpoint pairs with **Discord Companion 6.3 / provider core
+1.1**, readiness schema 3, and the existing Supabase database upgraded through
+migration 036. Follow [RELIABILITY-REPAIRS.md](RELIABILITY-REPAIRS.md) for the current
+update and recovery steps. Earlier release documents describe their historical
+checkpoints.
 
 See [PERSONAL-RELIABILITY-12.1.md](PERSONAL-RELIABILITY-12.1.md) for the changes,
 risks, installation sequence, verification, and recovery. The original v12/v6.1
@@ -59,16 +62,18 @@ deleted. Historical RIZIN tickets remain available in Results & ROI.
 
 ## Install or upgrade
 
-See `UPGRADE-PHASE8-V12.md` for the v11.2-to-v12 sequence, then follow
-`IMPLEMENTATION-01-BET-IDENTITY.md` for this patch. The two migrations are:
+For the current existing personal installation, follow
+[RELIABILITY-REPAIRS.md](RELIABILITY-REPAIRS.md). The older v11.2-to-v12 sequence is
+in `UPGRADE-PHASE8-V12.md`. The current incremental upgrades are:
 
 ```text
-supabase/migrations/202610050030_add_event_catalog_sources.sql
-supabase/migrations/202610120031_protect_fight_identity.sql
+supabase/upgrade-personal-12.1.0.sql     # Existing v12 through 030 → 035
+supabase/upgrade-personal-resilience.sql # Existing personal database through 035 → 036
 ```
 
-An existing v12 installation needs only migration `031`; an existing v11.2
-installation needs `030`, then `031`. A fresh database also requires the
+An installation already through `035` needs only the resilience upgrade. An
+older v12 installation through `030` needs both upgrades in the listed order.
+A fresh database also requires the
 original core schema, which is not included in these incremental migrations.
 After restoring that schema, apply migrations in filename order.
 
@@ -169,7 +174,7 @@ reset that archives rather than deletes the earlier sample.
 ## Discord v6 contract
 
 Discord v6 must be connected to this exact dashboard folder with
-`04-CONNECT-DASHBOARD.bat`. It verifies provider-core version `1.0`, waits for
+  `04-CONNECT-DASHBOARD.bat`. It verifies provider-core version `1.1`, waits for
 the current full daily dashboard run to reach success or partial, and only then
 publishes the morning snapshot. Manual `/refreshfight` and `/refreshodds`
 commands remain available for active event channels.

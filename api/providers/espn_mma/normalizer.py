@@ -456,10 +456,10 @@ def normalized_status(fight: dict[str, Any]) -> str:
         return "no_contest"
     if "draw" in values:
         return "draw"
-    if status_type.get("completed") is True or "final" in values:
-        return "completed"
     if any(token in values for token in ("cancel", "postpon", "abandon")):
         return "cancelled"
+    if status_type.get("completed") is True or "final" in values:
+        return "completed"
     if status_type.get("state") == "in" or "progress" in values:
         return "in_progress"
     return "scheduled"

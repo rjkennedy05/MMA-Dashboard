@@ -152,15 +152,14 @@ class DatabaseReader:
     """Restricted snapshots and publisher coordination; keys stay in local env files."""
     def __init__(self, dashboard):
         path = Path(dashboard).expanduser().resolve() / "api" / ".env"
-        if not path.is_file():
-            raise SetupError("The selected dashboard folder must contain api/.env from your working dashboard.")
         config = read_env(path)
         self.bet_owner_id = (read_env(ROOT / ".env").get("MMA_DASHBOARD_BET_OWNER_ID")
                              or os.environ.get("MMA_DASHBOARD_BET_OWNER_ID"))
-        self.url = config.get("SUPABASE_URL", "").rstrip("/")
+        self.url = (config.get("SUPABASE_URL") or os.environ.get("SUPABASE_URL") or "").rstrip("/")
         self.key = (read_env(ROOT / ".env").get("MMA_DISCORD_SUPABASE_KEY")
                     or os.environ.get("MMA_DISCORD_SUPABASE_KEY") or config.get("SUPABASE_SECRET_KEY") or config.get("SUPABASE_SERVICE_KEY")
-                    or config.get("SUPABASE_SERVICE_ROLE_KEY") or "")
+                    or config.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_SECRET_KEY")
+                    or os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "")
         parsed = urlparse(self.url)
         if (parsed.scheme != "https" or not re.fullmatch(r"[a-z0-9-]+\.supabase\.co", parsed.hostname or "")
                 or parsed.username or parsed.password or parsed.query or parsed.fragment
@@ -274,7 +273,8 @@ def fetch_data(reader, now, previous, *, require_ready=True):
                 or daily.get("status") not in {"success", "partial"}
                 or summary.get("publishable") is not True or review.get("ready") is not True):
             raise SetupError("The latest full dashboard refresh is not ready. Finish a matching daily refresh before publishing.")
-        pending=[int(eid) for eid,item in previous.get("events",{}).items() if not item.get("archived")]
+        pending=[int(eid) for eid,item in previous.get("events",{}).items()
+                 if not item.get("archived") or item.get("pending_results")]
         tables=reader.control_rpc("mma_discord_snapshot",{"p_start":(start-timedelta(days=2)).isoformat(),
             "p_end":(end+timedelta(days=2)).isoformat(),"p_pending":pending})
         after = reader.latest_daily_sync(now)
@@ -286,7 +286,8 @@ def fetch_data(reader, now, previous, *, require_ready=True):
     events = reader.rows("events", [("select", EVENT_COLUMNS),
         ("event_date", "gte." + (start - timedelta(days=2)).isoformat()),
         ("event_date", "lt." + (end + timedelta(days=2)).isoformat())])
-    pending_ids = [str(eid) for eid, item in previous.get("events", {}).items() if not item.get("archived")]
+    pending_ids = [str(eid) for eid, item in previous.get("events", {}).items()
+                   if not item.get("archived") or item.get("pending_results")]
     for batch in batches(pending_ids):
         events.extend(reader.rows("events", [("select", EVENT_COLUMNS), ("event_id", "in.(" + ",".join(batch) + ")")]))
     events = list({str(e["event_id"]): e for e in events}.values())
@@ -299,7 +300,7 @@ def fetch_data(reader, now, previous, *, require_ready=True):
     fights = []
     for batch in batches(wanted_ids):
         fights.extend(reader.rows("fights", [("select", FIGHT_COLUMNS), ("event_id", "in.(" + ",".join(batch) + ")")]))
-    result = {"events": eligible, "fights": fights, "odds": [], "research": [], "links": [], "warnings": [],
+    result = {"events": eligible, "fights": fights, "odds": [], "research": [], "links": [], "warnings": list(review.get("warnings", [])),
               "card_disputes": review.get("disputes", []), "checked_event_ids": review.get("checked_event_ids", [])}
     optional = [
         ("odds", [str(f["fight_id"]) for f in fights], "fight_id", "odds_id,fight_id,fighter_id,sportsbook,sportsbook_key,american_odds,recorded_at"),
@@ -1091,7 +1092,7 @@ def publish_cycle(publisher, data, now, overrides=None):
         if eid in active_ids and event and analysis.strip():
             publish_research(publisher, event, analysis)
     pending = [events[eid] for eid, item in publisher.state["events"].items()
-               if eid in events and eid not in active_ids and not item.get("archived")]
+               if eid in events and eid not in active_ids and (not item.get("archived") or item.get("pending_results"))]
     for event in active + pending:
         eid = str(event["event_id"])
         raw_fights = [f for f in app_data["fights"] if str(f["event_id"]) == eid]
@@ -1111,10 +1112,18 @@ def publish_cycle(publisher, data, now, overrides=None):
         fight_ids = {str(f["fight_id"]) for f in fights}
         event_history = ({key: value for key, value in history.items() if key.split(":", 1)[0] in fight_ids}
                          if data.get("odds") is not None else None)
+        disputes = event_disputes(data, publisher.state, event, fights)
+        day = local_day(event)
+        unresolved = [f["fight_id"] for f in fights if not final_bout(f)]
+        needs_review = bool(day and day < start and (unresolved or not fights))
+        if needs_review:
+            disputes.append({"code": "CARD_IMPORT_REVIEW", "event_id": event["event_id"],
+                "event_name": event["event_name"], "event_date": str(day), "fight_ids": unresolved,
+                "message": "Past card has unresolved matchups or results; saved information was retained."})
         publish_event(publisher, event, fights, now, event_history, links, (overrides or {}).get(eid, {}),
                       alert_prices=False, bets=(data.get("bets") or {}).get(eid) if eid in active_ids else None,
-                      disputes=event_disputes(data, publisher.state, event, fights))
-        item.update(archived=False, week_start=start.isoformat())
+                      disputes=disputes)
+        item.update(archived=False, week_start=start.isoformat(), pending_results=needs_review)
         publisher.save()
     # Only dated past cards are moved. Missing source rows and live events are retained.
     for eid, item in publisher.state["events"].items():
@@ -1123,10 +1132,11 @@ def publish_cycle(publisher, data, now, overrides=None):
         event = events[eid]
         day = local_day(event)
         event_fights=[f for f in data["fights"] if str(f["event_id"])==eid]
-        resolved=bool(event_fights) and all(final_bout(f) for f in event_fights)
-        if day and day < start and resolved and status(event.get("event_status")) in {"completed", "cancelled"}:
+        live = status(event.get("event_status")) in {"live", "postponed"} or any(status(f.get("fight_status")) == "live" for f in event_fights)
+        if day and day < start and not live:
             channel = publisher.channel(item["channel_id"])
-            publisher.move(channel, publisher.archive_destination())
+            destination = channel.get("parent_id") if channel.get("parent_id") in publisher.state.get("archive_categories", []) else publisher.archive_destination()
+            publisher.move(channel, destination)
             item.update(archived=True, event=event)
             publisher.save()
             print("Archived: " + event["event_name"])
@@ -1149,17 +1159,22 @@ def publish_cycle(publisher, data, now, overrides=None):
                           "value": f"Live, rescheduled or awaiting source confirmation.\nOpen card: <#{item['channel_id']}>"
                           + ("\n⚠️ Data dispute — awaiting review." if item.get("data_disputes") else "")})
     publisher.block("weekly-index", publisher.setup["channels"]["this-week"],
-                    embed_pages("📅 This week", f"{start.strftime('%b %d').replace(' 0', ' ')} – {(end - timedelta(days=1)).strftime('%b %d').replace(' 0', ' ')} • Central Time", index),
+                    embed_pages("📅 This week", f"{start.strftime('%b %d').replace(' 0', ' ')} – {(end - timedelta(days=1)).strftime('%b %d').replace(' 0', ' ')} • Central Time"
+                                + ("\n⚠️ " + "\n⚠️ ".join(data.get("warnings", [])) if data.get("warnings") else ""), index),
                     pin_first=True, seed=publisher.setup["messages"].get("this-week"), prune=True)
     archived = sorted([item for item in publisher.state["events"].values() if item.get("archived")],
                       key=lambda item: item["event"].get("event_date") or "", reverse=True)
-    archive_fields = [{"name": item["event"]["event_name"], "value": f"{local_day(item['event']) or 'Date TBA'} • <#{item['channel_id']}>"} for item in archived]
+    archive_fields = [{"name": item["event"]["event_name"] + (" *" if item.get("pending_results") else ""),
+                       "value": f"{local_day(item['event']) or 'Date TBA'} • <#{item['channel_id']}>"
+                       + ("\n⚠️ Matchups or results await review; saved data remains available." if item.get("pending_results") else "")}
+                      for item in archived]
     if not archive_fields:
         archive_fields = [{"name": "Archive ready", "value": "Past event channels will appear here after the weekly rollover."}]
     publisher.block("archive-index", publisher.setup["channels"]["archive-index"],
                     embed_pages("🗄️ Past cards", "Event details, results and bets remain available.", archive_fields),
                     pin_first=True, seed=publisher.setup["messages"].get("archive-index"), prune=True)
     publisher.state["last_success"] = now.isoformat()
+    publisher.state["last_week"] = start.isoformat()
     publisher.save()
     print(f"Synced {len(active)} weekly events; {len(archived)} event channels archived.")
     for warning in data.get("warnings", []):

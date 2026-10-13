@@ -107,6 +107,9 @@ def import_api_sports_odds(
                 metrics["matched"] += 1
                 metrics["inserted"] += result["inserted"]
                 metrics["unchanged"] += result["unchanged"]
+                if result.get("errors"):
+                    metrics["failures"] += len(result["errors"])
+                    metrics["failure_messages"].extend(safe_error(item["message"]) for item in result["errors"])
             except Exception as error:
                 metrics["failures"] += 1
                 metrics["failure_messages"].append(safe_error(error))

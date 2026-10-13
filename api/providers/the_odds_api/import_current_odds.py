@@ -342,6 +342,10 @@ if __name__ == "__main__":
             skipped_outcomes_count += int(
                 result["skipped"]
             )
+            if result.get("errors"):
+                failed_count += len(result["errors"])
+                for issue in result["errors"]:
+                    review_records.append(build_review_record(api_fight, "needs_review", safe_error(issue["message"])))
 
             print(
                 "  MATCHED — "

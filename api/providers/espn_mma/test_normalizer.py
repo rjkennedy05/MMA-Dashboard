@@ -110,6 +110,11 @@ FIGHTCENTER = {
 
 
 class NormalizerTests(unittest.TestCase):
+    def test_closed_cancelled_competition_is_cancelled_despite_completed_flag(self):
+        fight = {**DETAILED_FIGHT, "status": {"type": {"state": "post", "completed": True,
+                                                                   "description": "Cancelled"}}}
+        self.assertEqual(normalized_status(fight), "cancelled")
+
     def test_tba_matchups_are_provider_placeholders(self) -> None:
         fight = {
             "id": "placeholder-1",

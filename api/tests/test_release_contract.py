@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import re
 import unittest
-from scripts.build_upgrade import build_upgrade
+from scripts.build_upgrade import build_upgrade, build_resilient_upgrade
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,3 +30,7 @@ class ReleaseContractTests(unittest.TestCase):
             (ROOT / "supabase" / "upgrade-personal-12.1.0.sql").read_text(),
             build_upgrade(),
         )
+
+    def test_resilient_upgrade_matches_its_tested_migration(self):
+        self.assertEqual((ROOT / "supabase/upgrade-personal-resilience.sql").read_text(),
+                         build_resilient_upgrade())

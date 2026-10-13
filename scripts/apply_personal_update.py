@@ -64,13 +64,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dashboard")
     parser.add_argument("--companion")
+    parser.add_argument("--from-checkout", action="store_true",
+                        help="Build the paired source patch from this verified Git checkout.")
     args = parser.parse_args()
-    print("MMA personal update: post cards with visible data dispute warnings.\n"
+    print("MMA personal update: preserve settings and apply the paired source repairs.\n"
           "Let any refresh finish and stop Discord 05/06 before installing.")
+    bundle = Path(__file__).resolve().parent
+    if args.from_checkout:
+        try:
+            from scripts.build_personal_update import build_update
+        except ModuleNotFoundError:
+            from build_personal_update import build_update
+        bundle = build_update()
+        print("Verified update source: " + str(bundle))
     dashboard = args.dashboard or choose("MMA-Dashboard", default_dashboard())
     installation_folder(dashboard, "dashboard")
     companion = args.companion or choose("Discord bot", default_companion(dashboard))
-    backups = install_pair(Path(__file__).resolve().parent, dashboard, companion)
+    backups = install_pair(bundle, dashboard, companion)
     if backups:
         print("\nUpdate installed in both projects. Settings and Discord state were preserved.")
         for backup in backups:

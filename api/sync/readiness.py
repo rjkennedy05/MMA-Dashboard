@@ -30,7 +30,7 @@ def card_disputes(summary):
             continue
         item = {"code": "CARD_IMPORT_REVIEW", "event_name": error["context"],
                 "message": "The latest card update needs review; saved information was retained."}
-        item.update({key: error[key] for key in ("event_id", "event_date") if error.get(key) is not None})
+        item.update({key: error[key] for key in ("event_id", "event_date", "fight_ids") if error.get(key) is not None})
         disputes[json.dumps(item, sort_keys=True)] = item
     return [disputes[key] for key in sorted(disputes)]
 
@@ -70,19 +70,28 @@ def finalize_readiness(summary, args):
         and not args.skip_catalog
     )
     disputes = card_disputes(summary)
+    provider_promotions = {"espn_ufc": {"ufc", "dwcs"}, "espn_mma": {"pfl"},
+                           "one_championship": {"one"}, "lfa": {"lfa"}, "bkfc": {"bkfc"}}
+    unavailable = set().union(*(provider_promotions[key] for key in failures)) if failures else set()
+    if catalog_required and not catalog_ok:
+        unavailable.update({"ufc", "dwcs", "pfl"})
+    for card in (summary.get("quality_audit") or {}).get("cards", []):
+        promotion = str(card.get("promotion") or "").casefold()
+        if any(key in promotion or (key == "dwcs" and "contender" in promotion) for key in unavailable):
+            disputes.append({"code": "CARD_IMPORT_REVIEW", "event_id": card["event_id"],
+                "event_name": card["event_name"], "event_date": card["event_date"],
+                "message": "A source check was unavailable; saved card information was retained."})
+    source_usable = bool(expected and len(failures) < len(expected))
     reasons = []
     if not full:
         reasons.append("This was not a full daily card refresh.")
-    if failures:
-        reasons.append("Card providers need review: " + ", ".join(failures))
-    if catalog_required and not catalog_ok:
-        reasons.append("Official event discovery was not verified.")
+    if not source_usable:
+        reasons.append("No card provider completed a usable refresh.")
     if not coverage_ok:
         reasons.append("The final coverage audit did not complete.")
     summary["publishable"] = bool(
         full
-        and not failures
-        and catalog_ok
+        and source_usable
         and coverage_ok
         and not args.dry_run
     )
@@ -92,7 +101,9 @@ def finalize_readiness(summary, args):
         "reasons": reasons,
         "disputes": disputes,
         "checked_event_ids": sorted({int(value) for value in summary.get("checked_event_ids", [])}),
-        "warnings": ["Card differences are marked for review; saved data was retained."] if disputes else [],
+        "warnings": (["Card differences are marked for review; saved data was retained."] if disputes else [])
+            + (["Some card sources were unavailable; their saved information may be incomplete."] if failures else [])
+            + (["Official event discovery needs review; retained listings may be incomplete."] if catalog_required and not catalog_ok else []),
     }
     optional_problem = summary.get("odds_status") in {
         "failed",

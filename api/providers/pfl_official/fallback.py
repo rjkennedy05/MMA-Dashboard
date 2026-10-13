@@ -10,8 +10,10 @@ from ..espn_mma.normalizer import dashboard_event_date, event_fights, event_name
 from ..event_catalog.importer import event_match_score
 try:
     from sync.cards import process_cards
+    from sync.result_followup import include_followups
 except ModuleNotFoundError:
     from api.sync.cards import process_cards
+    from api.sync.result_followup import include_followups
 from .client import OfficialPflClient
 from .importer import OfficialPflImporter
 
@@ -49,6 +51,7 @@ def sync_pfl_cards(args, summary, supabase, should_refresh, mark_refreshed):
             summary["warnings"].append({"stage": "espn_mma", "message": safe_error(error)})
     events = sorted([row for row in all_events if _day(row) and start <= _day(row) <= end],
                     key=lambda row: (row.get("date") or "", event_name(row)))
+    all_events, events = include_followups(args, "espn_mma", all_events, events)
 
     def fetch(event):
         try:
@@ -64,6 +67,7 @@ def sync_pfl_cards(args, summary, supabase, should_refresh, mark_refreshed):
         summary["provider_runs"]["espn_mma"].update(status="failed", events=0, fights=0,
                                                   requests=client.request_count, source="no_espn_listings")
     targets = missing(all_events)
+    _, targets = include_followups(args, "pfl_official", targets, targets)
     if targets:
         summary["provider_runs"]["pfl_official"] = {"status": "running"}
         official = OfficialPflClient()

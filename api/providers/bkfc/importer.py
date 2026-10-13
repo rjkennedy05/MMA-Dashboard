@@ -5,6 +5,7 @@ import unicodedata
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlparse
 
 from . import normalizer
 from ..fight_identity import preserve_fight_identity
@@ -127,6 +128,20 @@ class BkfcImporter:
 
     def get_or_create_fighter(self, fighter: dict[str, Any]) -> int:
         mapping = self._external_mapping("fighter", fighter["external_id"])
+        page_mapping = None
+        page = urlparse(str(fighter.get("external_url") or ""))
+        if (page.scheme == "https" and page.netloc in {"www.bkfc.com", "bkfc.com"}
+                and not page.query and not page.fragment):
+            slug = re.fullmatch(r"/fighters/([a-zA-Z0-9_-]+)/?", page.path)
+            if slug:
+                page_mapping = self._external_mapping("fighter", slug[1])
+        if mapping and page_mapping and mapping["internal_id"] != page_mapping["internal_id"]:
+            raise RuntimeError("BKFC fighter page and results identities disagree; saved participants were retained.")
+        if not mapping and page_mapping:
+            fighter_id = int(page_mapping["internal_id"])
+            self._attach_mapping("fighter", fighter_id, fighter["external_id"], fighter.get("external_url"))
+            self._repair_mapped_fighter_name(fighter_id, fighter["name"], fighter["external_id"])
+            return fighter_id
         if mapping:
             fighter_id = int(mapping["internal_id"])
             self._repair_mapped_fighter_name(fighter_id, fighter["name"], fighter["external_id"])

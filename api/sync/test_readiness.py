@@ -48,15 +48,26 @@ class CardDisputeReadinessTests(unittest.TestCase):
         self.assertEqual(summary["publication_readiness"]["disputes"], [])
         self.assertEqual(summary["publication_readiness"]["checked_event_ids"], [42])
 
-    def test_real_failures_or_incomplete_audits_still_prevent_publication(self):
-        for target in ("bkfc", "official_catalog", "audit"):
+    def test_incomplete_audits_or_all_failed_sources_prevent_publication(self):
+        for target in ("all_sources", "audit"):
             with self.subTest(target=target):
                 summary = self.summary()
                 if target == "audit":
                     summary["quality_audit"]["status"] = "failed"
                 else:
-                    summary["provider_runs"][target]["status"] = "failed"
+                    for key in CARD_FLAGS:
+                        summary["provider_runs"][key]["status"] = "failed"
                 self.assertFalse(finalize_readiness(summary, self.args())["publishable"])
+
+    def test_one_failed_provider_flags_its_cards_and_allows_the_healthy_providers(self):
+        summary = self.summary()
+        summary["provider_runs"]["bkfc"]["status"] = "failed"
+        summary["provider_runs"]["official_catalog"]["status"] = "failed"
+        summary["quality_audit"]["cards"] = [{"event_id": 60, "event_name": "BKFC Card",
+            "event_date": "2026-10-17", "promotion": "BKFC"}]
+        self.assertTrue(finalize_readiness(summary, self.args())["publishable"])
+        self.assertEqual(summary["publication_readiness"]["disputes"][0]["event_id"], 60)
+        self.assertIn("Official event discovery", str(summary["publication_readiness"]["warnings"]))
 
     def test_one_rejected_card_can_post_the_retained_data_with_a_warning(self):
         summary = self.summary()

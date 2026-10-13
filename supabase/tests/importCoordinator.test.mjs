@@ -65,6 +65,7 @@ before(async () => {
   await db.exec(await readFile(new URL("../migrations/202610120033_fresh_odds_and_reads.sql",import.meta.url),"utf8"));
   await db.exec(await readFile(new URL("../migrations/202610120034_atomic_tickets.sql",import.meta.url),"utf8"));
   await db.exec(await readFile(new URL("../migrations/202610120035_discord_snapshot.sql",import.meta.url),"utf8"));
+  await db.exec(await readFile(new URL("../migrations/202610130036_isolate_import_reviews.sql",import.meta.url),"utf8"));
 });
 
 beforeEach(async () => {
@@ -360,4 +361,71 @@ test('a confirmed whole-event cancellation resolves only its remaining scheduled
   const rows=(await db.query('select fight_id,fight_status,winner_id from public.fights order by fight_id')).rows;
   assert.equal(rows.find(r=>r.fight_id===pending.internal_id).fight_status,'cancelled');
   assert.equal(rows.find(r=>r.fight_id===f.internal_id).winner_id,11);
+});
+
+test("a rejected bout rolls back its fighter writes while good results and bets survive", async () => {
+  const e=await event();
+  const f=await save('fight',{event_id:e.internal_id,fighter_a_id:11,fighter_b_id:12,fight_status:'scheduled'},'old-bout');
+  await db.query("insert into public.fight_research(fight_id,bet_side,stake_units,bet_price) values($1,'fighter_a',1,110)",[f.internal_id]);
+  const op=(entity,payload,external,existing,temporary,group)=>({p_entity_type:entity,p_payload:payload,
+    p_source_id:42,p_external_id:external,p_existing_id:existing,p_external_url:null,temporary_id:temporary,
+    ...(group?{bout_group:group}:{})});
+  const operations=[
+    op('event',{event_name:'UFC 999'},'source1',e.internal_id,null),
+    op('fight',{event_id:e.internal_id,fighter_a_id:11,fighter_b_id:12,fight_status:'completed',winner_id:11,result_type:'win'},'old-bout',f.internal_id,null,'1'),
+    op('fighter',{full_name:'Uncommitted replacement'},'rejected-fighter',null,-2,'2'),
+    op('fight',{event_id:e.internal_id,fighter_a_id:-2,fighter_b_id:12,fight_status:'scheduled'},'bad-replacement',f.internal_id,null,'2'),
+    op('fighter',{full_name:'New valid fighter'},'valid-fighter',null,-3,'3'),
+    op('fight',{event_id:e.internal_id,fighter_a_id:-3,fighter_b_id:13,fight_status:'cancelled'},'valid-second',null,-4,'3')];
+  const result=(await db.query('select public.mma_apply_import_batch_resilient($1::jsonb) result',[JSON.stringify(operations)])).rows[0].result;
+  assert.equal(result.failed_groups.length,1);
+  assert.equal(result.failed_groups[0].group,'2');
+  assert.equal(result.ids['-2'],undefined);
+  assert.ok(result.ids['-3']);assert.ok(result.ids['-4']);
+  assert.equal((await db.query("select count(*)::int n from public.fighters where full_name='Uncommitted replacement'")).rows[0].n,0);
+  const stored=(await db.query('select * from public.fights where fight_id=$1',[f.internal_id])).rows[0];
+  assert.equal(stored.winner_id,11);assert.equal(stored.fighter_a_id,11);
+  assert.equal((await db.query('select bet_side from public.fight_research where fight_id=$1',[f.internal_id])).rows[0].bet_side,'fighter_a');
+  assert.equal(result.event_states[String(e.internal_id)],'completed');
+});
+
+test("a stale writer cannot turn a lease failure into a bout review", async () => {
+  const claim=(await db.query('select public.mma_claim_sync_lease($1) result',[holder])).rows[0].result;
+  const operations=[{p_entity_type:'event',p_payload:{event_name:'Denied'},p_source_id:42,p_external_id:'denied',temporary_id:-1}];
+  await assert.rejects(db.query('select public.mma_apply_import_batch_resilient($1::jsonb,$2,$3)',
+    [JSON.stringify(operations),other,claim.fence]),error=>error.code==='55P03');
+  assert.equal((await db.query('select count(*)::int n from public.events')).rows[0].n,0);
+});
+
+test("invalid odds for one book do not block other books or leave half of that book fresh", async () => {
+  const f=await fight();
+  const quote=(book,fighter,price)=>({fight_id:f.internal_id,fighter_id:fighter,sportsbook_key:book,
+    sportsbook:book,market_type:'moneyline',american_odds:price,decimal_odds:2,implied_probability:.5,source_id:42});
+  const rows=[quote('good',11,110),quote('good',12,-110),quote('bad',11,120),quote('bad',12,0),
+    quote('other',11,130),quote('other',12,-130)];
+  const result=(await db.query('select public.mma_record_odds_resilient($1::jsonb) result',[JSON.stringify(rows)])).rows[0].result;
+  assert.equal(result.inserted,4);assert.equal(result.errors.length,1);
+  assert.equal(result.errors[0].sportsbook_key,'bad');
+  assert.equal((await db.query("select count(*)::int n from public.mma_odds_observations where sportsbook_key='bad'")).rows[0].n,0);
+  assert.equal((await db.query('select count(*)::int n from public.odds')).rows[0].n,4);
+});
+
+test("an older paired response cannot refresh only the side with an older stored quote", async () => {
+  const rows=await prices();
+  await odds(rows);
+  await db.query("update public.mma_odds_observations set provider_updated_at='2026-10-11T12:00:00Z' where fighter_id=11");
+  const before=(await db.query('select fighter_id,american_odds,observed_at from public.mma_odds_observations order by fighter_id')).rows;
+  const result=(await db.query('select public.mma_record_odds_resilient($1::jsonb) result',
+    [JSON.stringify(rows.map(r=>({...r,american_odds:200,provider_updated_at:'2026-10-10T18:00:00Z'})))])).rows[0].result;
+  assert.equal(result.skipped,2);assert.equal(result.inserted,0);assert.equal(result.errors.length,0);
+  assert.deepEqual((await db.query('select fighter_id,american_odds,observed_at from public.mma_odds_observations order by fighter_id')).rows,before);
+});
+
+test("resilient odds refuses one-sided books and future timestamps without touching observations", async () => {
+  const rows=await prices();
+  for (const quotes of [rows.slice(0,1), rows.map(r=>({...r,provider_updated_at:'2099-01-01T00:00:00Z'}))]) {
+    const result=(await db.query('select public.mma_record_odds_resilient($1::jsonb) result',[JSON.stringify(quotes)])).rows[0].result;
+    assert.equal(result.errors.length,1);assert.equal(result.inserted,0);
+    assert.equal((await db.query('select count(*)::int n from public.mma_odds_observations')).rows[0].n,0);
+  }
 });

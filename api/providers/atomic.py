@@ -161,6 +161,23 @@ class EventBatch:
         self.saved_ids = {}
         self.event_states = {}
         self.read_cache = {}
+        self.current_group = None
+        self.failed_groups = []
+
+    @contextmanager
+    def bout(self, group):
+        previous = self.current_group
+        snapshot = (len(self.operations), deepcopy(self.rows), deepcopy(self.identities),
+                    self.temporary, dict(self.read_cache))
+        self.current_group = str(group)
+        try:
+            yield
+        except Exception:
+            count, self.rows, self.identities, self.temporary, self.read_cache = snapshot
+            del self.operations[count:]
+            raise
+        finally:
+            self.current_group = previous
 
     def operation(self, name, arguments):
         entity, source, external = (
@@ -204,6 +221,8 @@ class EventBatch:
         staged[identity] = row
         operation = deepcopy(arguments)
         operation["temporary_id"] = identity if new else None
+        if self.current_group is not None:
+            operation["bout_group"] = self.current_group
         self.operations.append(operation)
         self.identities[identity_key] = {
             "internal_id": identity,
@@ -219,7 +238,8 @@ class EventBatch:
         if self.operations:
             result = rpc_value(
                 self.client.raw.rpc(
-                    "mma_apply_import_batch",
+                    "mma_apply_import_batch_resilient" if any("bout_group" in op for op in self.operations)
+                    else "mma_apply_import_batch",
                     {
                         "p_operations": self.operations,
                         **lease_arguments(),
@@ -228,6 +248,7 @@ class EventBatch:
             )
             self.saved_ids = {int(k): int(v) for k, v in result["ids"].items()}
             self.event_states = result.get("event_states") or {}
+            self.failed_groups = result.get("failed_groups") or []
 
 
 @contextmanager

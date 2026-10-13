@@ -6,6 +6,10 @@ from types import SimpleNamespace
 
 def rpc(client, name, arguments):
     def execute():
+        if name == "mma_apply_import_batch_resilient":
+            result = rpc(client, "mma_apply_import_batch", arguments).execute()
+            result.data["failed_groups"] = []
+            return result
         rows = getattr(client, "rows", None)
         if not isinstance(rows, dict):
             rows = {
@@ -64,6 +68,10 @@ def rpc(client, name, arguments):
             ),
             None,
         )
+        if mapping is None:
+            mapping = next((r for r in getattr(client, "identity_aliases", [])
+                            if r["entity_type"] == entity and r["source_id"] == source
+                            and r["external_id"] == external), None)
         if name == "mma_find_external_identity":
             return SimpleNamespace(data=deepcopy(mapping))
         if name != "mma_upsert_import_entity":
@@ -102,6 +110,10 @@ def rpc(client, name, arguments):
         if not pointer:
             pointer = {"external_id_map_id": len(rows["external_ids"]) + 1}
             rows["external_ids"].append(pointer)
+        elif pointer.get("external_id") != external:
+            if not hasattr(client, "identity_aliases"):
+                client.identity_aliases = []
+            client.identity_aliases.append(deepcopy(pointer))
         pointer.update(
             entity_type=entity,
             source_id=source,
@@ -109,7 +121,7 @@ def rpc(client, name, arguments):
             internal_id=identity,
             external_url=arguments.get("p_external_url"),
         )
-        if mapping and mapping is not pointer:
+        if mapping and mapping is not pointer and mapping in rows["external_ids"]:
             rows["external_ids"].remove(mapping)
         return SimpleNamespace(
             data={"status": status, "internal_id": identity, "row": deepcopy(stored)}

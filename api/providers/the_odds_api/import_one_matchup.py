@@ -194,12 +194,11 @@ def import_moneylines(
     api_fight: dict[str, Any],
     database_fight: dict[str, Any],
     source_id: int,
-) -> dict[str, int]:
-    inserted = 0
-    unchanged = 0
+) -> dict[str, Any]:
     skipped = 0
 
     rows = []
+    errors = []
 
     fight_id = int(
         database_fight["fight_id"]
@@ -218,6 +217,9 @@ def import_moneylines(
 
         if not sportsbook:
             continue
+        book_start = len(rows)
+        book_invalid = False
+        moneyline_markets = 0
 
         for market in bookmaker.get(
             "markets",
@@ -225,6 +227,7 @@ def import_moneylines(
         ):
             if market.get("key") != "h2h":
                 continue
+            moneyline_markets += 1
 
             recorded_at = (
                 market.get("last_update")
@@ -251,6 +254,7 @@ def import_moneylines(
                     or price is None
                 ):
                     skipped += 1
+                    book_invalid = True
                     continue
 
                 fighter_id = (
@@ -268,9 +272,17 @@ def import_moneylines(
                     )
 
                     skipped += 1
+                    book_invalid = True
                     continue
 
-                american_odds = int(price)
+                try:
+                    american_odds = int(price)
+                    if float(price) != american_odds or -100 < american_odds < 100:
+                        raise ValueError("Invalid price")
+                except (ValueError, TypeError, OverflowError):
+                    skipped += 1
+                    book_invalid = True
+                    continue
 
                 rows.append(
                     {
@@ -306,10 +318,21 @@ def import_moneylines(
                     }
                 )
 
+        sides = {row["fighter_id"] for row in rows[book_start:]}
+        expected = {get_fighter_id_for_selection(database_fight, database_fight["fighter_a"]["full_name"]),
+                    get_fighter_id_for_selection(database_fight, database_fight["fighter_b"]["full_name"])}
+        if moneyline_markets and (book_invalid or moneyline_markets != 1
+                                 or len(rows) - book_start != 2 or sides != expected or None in expected):
+            skipped += len(rows) - book_start
+            del rows[book_start:]
+            errors.append({"fight_id": fight_id, "sportsbook_key": canonical_book_key(sportsbook,sportsbook_key),
+                           "message": "The source did not provide a valid pair of prices; prior book prices were retained."})
+
     if rows:
-        result = rpc_value(supabase.rpc("mma_record_odds", {"p_rows":rows,**lease_arguments()}).execute())
-        return {"inserted":result["inserted"],"unchanged":result["unchanged"],"skipped":skipped+result["skipped"]}
-    return {"inserted":0,"unchanged":0,"skipped":skipped}
+        result = rpc_value(supabase.rpc("mma_record_odds_resilient", {"p_rows":rows,**lease_arguments()}).execute())
+        return {"inserted":result["inserted"],"unchanged":result["unchanged"],"skipped":skipped+result["skipped"],
+                "errors": errors + (result.get("errors") or [])}
+    return {"inserted":0,"unchanged":0,"skipped":skipped,"errors":errors}
 
 
 if __name__ == "__main__":

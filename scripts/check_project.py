@@ -79,12 +79,14 @@ def main():
             "api.sync.test_data_quality",
             "api.sync.test_freshness",
             "api.sync.test_readiness",
+            "api.sync.test_result_followup",
             "api.providers.test_fight_identity",
             "api.tests.test_reliability",
             "api.tests.test_release_contract",
             "scripts.test_scheduled_sync",
             "scripts.test_patch_bundle",
             "scripts.test_personal_update",
+            "scripts.test_build_personal_update",
         ],
     )
     for name, command in [

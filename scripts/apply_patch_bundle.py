@@ -40,7 +40,7 @@ def relative_file(value):
     path = PurePosixPath(value)
     if (path.is_absolute() or not path.parts or ".." in path.parts or "\\" in value
             or ":" in value or any(part.lower().startswith(".env") for part in path.parts)
-            or not (path.parts[0] in {"api", "scripts", "supabase"} or (len(path.parts) == 1 and path.suffix in {".md", ".py"}))):
+            or not (path.parts[0] in {"api", "scripts", "src", "supabase"} or (len(path.parts) == 1 and path.suffix in {".md", ".py"}))):
         raise ValueError("The patch contains an unsupported file path.")
     return Path(*path.parts)
 

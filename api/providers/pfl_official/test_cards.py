@@ -14,6 +14,7 @@ from api.providers.atomic import AtomicImportClient
 from api.providers.espn_mma import normalizer as shared
 from api.providers.espn_mma.test_importer import FakeSupabase
 from api.providers.fight_identity import FightIdentityError
+from api.providers.persistence import find_identity
 from api.providers.pfl_official.client import OfficialPflClient
 from api.providers.pfl_official.importer import OfficialPflImporter
 from api.providers.pfl_official.normalizer import OfficialPflCardError, card_metadata, normalize_card
@@ -167,7 +168,7 @@ class SavedCardIdentityTests(unittest.TestCase):
             if "/rpc/" in request.url.path:
                 name = request.url.path.rsplit("/", 1)[-1]
                 args = json.loads(request.content)
-                if name == "mma_apply_import_batch":
+                if name in {"mma_apply_import_batch", "mma_apply_import_batch_resilient"}:
                     commits.append(deepcopy(args))
                 return httpx.Response(200, json=raw.rpc(name, args).execute().data)
             table = request.url.path.rsplit("/", 1)[-1]
@@ -232,16 +233,27 @@ class SavedCardIdentityTests(unittest.TestCase):
         self.assertEqual((bout["fighter_a_id"], bout["fighter_b_id"]), (5670, 5673))
         self.assertEqual(len(raw.rows["fights"]), 11)
 
-    def test_conflicting_fighter_mapping_keeps_the_entire_previous_card(self):
+    def test_conflicting_fighter_mapping_preserves_that_bout_and_updates_the_rest(self):
         raw, event, fights = self.saved_card(duplicates=True)
         raw.rows["external_ids"].append({"entity_type": "fighter", "source_id": 77,
                                         "external_id": "pfl-fighter:1160", "internal_id": 6001})
         before = deepcopy(raw.rows)
         importer, commits = self.sdk_importer(raw)
-        with self.assertRaisesRegex(FightIdentityError, "maps to #6001.*uses #5673"):
-            import_card(importer, event, fights)
-        self.assertEqual(commits, [])
-        self.assertEqual(raw.rows, before)
+        saved, results = import_card(importer, event, fights)
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(len(saved["fight_reviews"]), 1)
+        self.assertRegex(saved["fight_reviews"][0]["message"], "maps to #6001.*uses #5673")
+        self.assertEqual(results[2]["status"], "review")
+        self.assertEqual(sum(r["status"] in {"updated", "imported"} for r in results), 10)
+        self.assertEqual(next(r for r in raw.rows["fights"] if r["fight_id"] == 9540),
+                         next(r for r in before["fights"] if r["fight_id"] == 9540))
+        self.assertEqual(raw.rows["fighters"], before["fighters"])
+        self.assertEqual(raw.rows["fight_research"], before["fight_research"])
+        self.assertEqual(raw.rows["bet_legs"], before["bet_legs"])
+        for link in before["external_ids"]:
+            self.assertEqual(find_identity(raw, link["entity_type"], link["source_id"],
+                                           link["external_id"])["internal_id"], link["internal_id"])
+        self.assertFalse(any(op.get("bout_group") == "3" for op in commits[0]["p_operations"]))
 
     def test_single_fight_checks_both_source_mappings_before_attaching_either(self):
         raw, _, fights = self.saved_card(duplicates=True)
@@ -268,7 +280,7 @@ class SavedCardIdentityTests(unittest.TestCase):
         self.assertTrue(all(r["fight_id"] > 0 for r in results))
         self.assertTrue(all(r["internal_id"] > 0 for r in raw.rows["external_ids"]))
 
-    def test_conflict_on_the_last_fight_discards_all_staged_changes(self):
+    def test_conflict_on_the_last_fight_keeps_the_other_ten_results(self):
         raw, event, fights = self.saved_card()
         fighter = shared.fighters(fights[-1])[1]
         raw.rows["fighters"].append({"fighter_id": 13000, "full_name": fighter["name"]})
@@ -276,10 +288,21 @@ class SavedCardIdentityTests(unittest.TestCase):
                                         "external_id": fighter["external_id"], "internal_id": 13000})
         before = deepcopy(raw.rows)
         importer, commits = self.sdk_importer(raw)
-        with self.assertRaisesRegex(FightIdentityError, "fighter source mapping"):
-            import_card(importer, event, fights)
-        self.assertEqual(commits, [])
-        self.assertEqual(raw.rows, before)
+        saved, results = import_card(importer, event, fights)
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(len(saved["fight_reviews"]), 1)
+        self.assertRegex(saved["fight_reviews"][0]["message"], "fighter source mapping")
+        self.assertEqual(results[10]["status"], "review")
+        self.assertEqual(sum(r["status"] in {"updated", "imported"} for r in results), 10)
+        self.assertEqual(next(r for r in raw.rows["fights"] if r["fight_id"] == 9548),
+                         next(r for r in before["fights"] if r["fight_id"] == 9548))
+        self.assertEqual(raw.rows["fighters"], before["fighters"])
+        self.assertEqual(raw.rows["fight_research"], before["fight_research"])
+        self.assertEqual(raw.rows["bet_legs"], before["bet_legs"])
+        for link in before["external_ids"]:
+            self.assertEqual(find_identity(raw, link["entity_type"], link["source_id"],
+                                           link["external_id"])["internal_id"], link["internal_id"])
+        self.assertFalse(any(op.get("bout_group") == "11" for op in commits[0]["p_operations"]))
 
     def test_two_different_saved_pairs_with_the_same_names_require_review(self):
         raw, event, fights = self.saved_card(duplicates=True)
@@ -287,10 +310,21 @@ class SavedCardIdentityTests(unittest.TestCase):
             "fighter_a_id": 6000, "fighter_b_id": 6001, "fight_status": "scheduled"})
         before = deepcopy(raw.rows)
         importer, commits = self.sdk_importer(raw)
-        with self.assertRaisesRegex(FightIdentityError, "multiple saved fighter pairs"):
-            import_card(importer, event, fights)
-        self.assertEqual(commits, [])
-        self.assertEqual(raw.rows, before)
+        saved, results = import_card(importer, event, fights)
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(len(saved["fight_reviews"]), 1)
+        self.assertRegex(saved["fight_reviews"][0]["message"], "multiple saved fighter pairs")
+        self.assertEqual(results[2]["status"], "review")
+        self.assertEqual(sum(r["status"] in {"updated", "imported"} for r in results), 10)
+        self.assertEqual(next(r for r in raw.rows["fights"] if r["fight_id"] == 9540),
+                         next(r for r in before["fights"] if r["fight_id"] == 9540))
+        self.assertEqual(raw.rows["fighters"], before["fighters"])
+        self.assertEqual(raw.rows["fight_research"], before["fight_research"])
+        self.assertEqual(raw.rows["bet_legs"], before["bet_legs"])
+        for link in before["external_ids"]:
+            self.assertEqual(find_identity(raw, link["entity_type"], link["source_id"],
+                                           link["external_id"])["internal_id"], link["internal_id"])
+        self.assertFalse(any(op.get("bout_group") == "3" for op in commits[0]["p_operations"]))
 
     def test_a_changed_opponent_cannot_reuse_a_mapped_historical_fight(self):
         raw, event, fights = self.saved_card()
@@ -299,10 +333,21 @@ class SavedCardIdentityTests(unittest.TestCase):
         fights[2]["competitors"][1]["athlete"].update(id="pfl-fighter:999999", displayName="Replacement Fighter")
         before = deepcopy(raw.rows)
         importer, commits = self.sdk_importer(raw)
-        with self.assertRaisesRegex(FightIdentityError, "different stored participants"):
-            import_card(importer, event, fights)
-        self.assertEqual(commits, [])
-        self.assertEqual(raw.rows, before)
+        saved, results = import_card(importer, event, fights)
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(len(saved["fight_reviews"]), 1)
+        self.assertRegex(saved["fight_reviews"][0]["message"], "different stored participants")
+        self.assertEqual(results[2]["status"], "review")
+        self.assertEqual(sum(r["status"] in {"updated", "imported"} for r in results), 10)
+        self.assertEqual(next(r for r in raw.rows["fights"] if r["fight_id"] == 9540),
+                         next(r for r in before["fights"] if r["fight_id"] == 9540))
+        self.assertEqual(raw.rows["fighters"], before["fighters"])
+        self.assertEqual(raw.rows["fight_research"], before["fight_research"])
+        self.assertEqual(raw.rows["bet_legs"], before["bet_legs"])
+        for link in before["external_ids"]:
+            self.assertEqual(find_identity(raw, link["entity_type"], link["source_id"],
+                                           link["external_id"])["internal_id"], link["internal_id"])
+        self.assertFalse(any(op.get("bout_group") == "3" for op in commits[0]["p_operations"]))
 
     def test_a_conflicting_fight_source_mapping_is_not_redirected(self):
         raw, event, fights = self.saved_card()
@@ -310,10 +355,21 @@ class SavedCardIdentityTests(unittest.TestCase):
             "external_id": "pfl-fight:pfl-morocco:10851", "internal_id": 9538})
         before = deepcopy(raw.rows)
         importer, commits = self.sdk_importer(raw)
-        with self.assertRaisesRegex(FightIdentityError, "fight source ID points to another"):
-            import_card(importer, event, fights)
-        self.assertEqual(commits, [])
-        self.assertEqual(raw.rows, before)
+        saved, results = import_card(importer, event, fights)
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(len(saved["fight_reviews"]), 1)
+        self.assertRegex(saved["fight_reviews"][0]["message"], "fight source ID points to another")
+        self.assertEqual(results[2]["status"], "review")
+        self.assertEqual(sum(r["status"] in {"updated", "imported"} for r in results), 10)
+        self.assertEqual(next(r for r in raw.rows["fights"] if r["fight_id"] == 9540),
+                         next(r for r in before["fights"] if r["fight_id"] == 9540))
+        self.assertEqual(raw.rows["fighters"], before["fighters"])
+        self.assertEqual(raw.rows["fight_research"], before["fight_research"])
+        self.assertEqual(raw.rows["bet_legs"], before["bet_legs"])
+        for link in before["external_ids"]:
+            self.assertEqual(find_identity(raw, link["entity_type"], link["source_id"],
+                                           link["external_id"])["internal_id"], link["internal_id"])
+        self.assertFalse(any(op.get("bout_group") == "3" for op in commits[0]["p_operations"]))
 
     def test_dry_run_does_not_attach_source_ids_or_change_saved_data(self):
         raw, event, fights = self.saved_card(duplicates=True)

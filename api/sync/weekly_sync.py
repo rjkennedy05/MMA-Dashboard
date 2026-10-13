@@ -119,6 +119,7 @@ from providers.api_sports_mma.client import (  # noqa: E402
 from providers.event_catalog.sync import sync_official_catalogs  # noqa: E402
 from providers.manifest import active_promotions  # noqa: E402
 from sync.cards import process_cards
+from sync.result_followup import load_followups, include_followups
 from sync.lease import SyncLease, ImportBusyError
 from sync.readiness import resolve_scope, finalize_readiness
 from providers.errors import safe_error
@@ -207,6 +208,8 @@ def should_refresh_listing(
     provider: str,
     event: dict[str, Any],
 ) -> bool:
+    if event.get("_followup_event_id"):
+        return True
     cache = getattr(args, "freshness_cache", None)
     if cache is None or args.mode != "daily":
         return True
@@ -569,10 +572,11 @@ def sync_ufc(args, summary):
             "event_date":entry["date"],"message":"Official event retained; ESPN has no matching detailed card yet."})
     events = sorted([row for row in all_events if event_in_window(row,start,end)],
                     key=lambda row:(row.get("date") or "",event_name(row)))
+    all_events, events = include_followups(args, "espn_ufc", all_events, events)
     def fetch(event):
         try:
             center = client.get_fightcenter(str(event["id"]))
-            return event, event_fights(event,center), []
+            return {**event, **(center.get("event") or {})}, event_fights(event,center), []
         except EspnMmaNoFightCardError:
             return event, [], ["Event retained; the source has not published a usable card."]
     process_cards(args,summary,client,UfcImporter(supabase),all_events,events,"espn_ufc",
@@ -595,6 +599,7 @@ def sync_one(args, summary):
     start,end=today-timedelta(days=args.past_days),today+timedelta(days=args.future_days)
     all_events=parse_one_event_listing(client.get_event_listing())
     events=sorted([row for row in all_events if one_event_in_window(row,start,end)],key=lambda row:(row.get("date") or "",one_event_name(row)))
+    all_events, events = include_followups(args, "one_championship", all_events, events)
     def fetch(listed):
         html=client.get_event_page(listed["external_url"])
         status_url=one_event_status_url(html)
@@ -616,6 +621,7 @@ def sync_lfa(args, summary):
               *parse_lfa_official_events(client.get_official_past(),status="completed")]
     all_events=merge_lfa_event_listings(official,parse_lfa_sherdog_index(client.get_sherdog_index()))
     events=sorted([row for row in all_events if lfa_event_in_window(row,start,end)],key=lambda row:(row.get("date") or "",lfa_event_name(row)))
+    all_events, events = include_followups(args, "lfa", all_events, events)
     def fetch(event):
         url=lfa_sherdog_event_url(event)
         fights=parse_lfa_fights(event,client.get_sherdog_event(url)) if url else []
@@ -634,6 +640,7 @@ def sync_bkfc(args, summary):
     all_events=merge_bkfc_event_listings(parse_bkfc_event_listing(client.get_upcoming(),status="upcoming"),
                                        parse_bkfc_event_listing(client.get_past(),status="completed"))
     events=sorted([row for row in all_events if bkfc_event_in_window(row,start,end)],key=lambda row:(row.get("date") or "",bkfc_event_name(row)))
+    all_events, events = include_followups(args, "bkfc", all_events, events)
     def fetch(listed):
         html=client.get_event_page(listed["external_url"])
         event=enrich_bkfc_event(listed,html)
@@ -951,6 +958,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def execute_sync(args, summary, run_id, lease):
+    if args.mode == "daily" and args.requested_scope == "all" and not args.dry_run:
+        args.followup_cache, args.result_followups = load_followups(supabase, args,
+            Path(FRESHNESS_STATE).with_name("result_followup.json"))
+        summary["result_followup_events"] = [seed["_followup_event_id"] for queue in args.result_followups.values() for seed in queue]
     print("=" * 64)
     print("MMA DASHBOARD DATA SYNC")
     print(

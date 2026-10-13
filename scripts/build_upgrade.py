@@ -37,12 +37,17 @@ def build_upgrade():
     return "\n".join(parts + ["commit;\n"])
 
 
+def build_resilient_upgrade():
+    path = ROOT / "supabase/migrations/202610130036_isolate_import_reviews.sql"
+    return "-- Additive update for an existing personal reliability database through 035.\n" + path.read_text()
+
+
 if __name__ == "__main__":
-    target = ROOT / "supabase" / "upgrade-personal-12.1.0.sql"
-    if "--check" in sys.argv:
-        if target.read_text() != build_upgrade():
-            raise SystemExit(
-                "Combined upgrade differs from its migrations; run scripts/build_upgrade.py."
-            )
-    else:
-        target.write_text(build_upgrade())
+    for filename, build in (("upgrade-personal-12.1.0.sql", build_upgrade),
+                            ("upgrade-personal-resilience.sql", build_resilient_upgrade)):
+        target = ROOT / "supabase" / filename
+        if "--check" in sys.argv:
+            if target.read_text() != build():
+                raise SystemExit("Combined upgrade differs from its migrations; run scripts/build_upgrade.py.")
+        else:
+            target.write_text(build())

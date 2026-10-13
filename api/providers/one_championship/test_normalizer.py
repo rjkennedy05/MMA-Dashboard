@@ -75,6 +75,12 @@ DETAIL_HTML = """
 
 
 class OneChampionshipNormalizerTests(unittest.TestCase):
+    def test_explicit_cancellation_does_not_cancel_the_other_bout(self):
+        html = DETAIL_HTML.replace('<div class="sticker"></div>', '<div class="sticker">CANCELLED</div>', 1)
+        fights = parse_fights(parse_event_listing(LISTING_HTML)[0], html)
+        self.assertEqual(fights[0]["fight_status"], "cancelled")
+        self.assertEqual(fights[1]["fight_status"], "scheduled")
+
     def setUp(self):
         self.events = parse_event_listing(LISTING_HTML)
         self.event = self.events[0]

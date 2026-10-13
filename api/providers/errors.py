@@ -16,6 +16,7 @@ def safe_error(error):
         "SUPABASE_SERVICE_KEY",
         "SUPABASE_SECRET_KEY",
         "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_ACCESS_TOKEN",
         "DISCORD_BOT_TOKEN",
     ):
         value = os.environ.get(name)

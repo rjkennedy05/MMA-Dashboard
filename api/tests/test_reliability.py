@@ -256,13 +256,14 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(finalize_readiness(summary, self.args())["status"], "failed")
         self.assertFalse(summary["publishable"])
 
-    def test_optional_odds_gaps_can_publish_but_a_failed_card_source_cannot(self):
+    def test_optional_odds_and_one_failed_source_do_not_stop_other_card_updates(self):
         summary = self.summary()
         summary["odds_status"] = "completed_with_gaps"
         self.assertTrue(finalize_readiness(summary, self.args())["publishable"])
         self.assertEqual(summary["status"], "partial")
         summary["provider_runs"]["bkfc"]["status"] = "partial"
-        self.assertFalse(finalize_readiness(summary, self.args())["publishable"])
+        self.assertTrue(finalize_readiness(summary, self.args())["publishable"])
+        self.assertTrue(summary["publication_readiness"]["warnings"])
 
     def test_a_missing_official_near_term_card_posts_with_a_review_warning(self):
         summary = self.summary()
