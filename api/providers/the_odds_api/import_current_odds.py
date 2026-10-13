@@ -26,8 +26,6 @@ except ImportError:
     )
 
 
-from providers.errors import safe_error
-
 def configure_utf8_console() -> None:
     """Keep fighter names Unicode-safe in Windows consoles and task pipes."""
     for stream in (sys.stdout, sys.stderr):
@@ -342,10 +340,6 @@ if __name__ == "__main__":
             skipped_outcomes_count += int(
                 result["skipped"]
             )
-            if result.get("errors"):
-                failed_count += len(result["errors"])
-                for issue in result["errors"]:
-                    review_records.append(build_review_record(api_fight, "needs_review", safe_error(issue["message"])))
 
             print(
                 "  MATCHED — "
@@ -362,13 +356,13 @@ if __name__ == "__main__":
                 build_review_record(
                     api_fight,
                     status="failed",
-                    reason=safe_error(error),
+                    reason=str(error),
                 )
             )
 
             print(
                 "  FAILED:",
-                safe_error(error),
+                error,
             )
 
     report_path = write_review_report(

@@ -43,13 +43,6 @@ class FakeSupabase:
     def __init__(self) -> None:
         self.inserted = []
 
-    def rpc(self,name,args):
-        if name!="mma_record_odds_resilient":raise AssertionError(name)
-        def execute():
-            self.inserted.extend(args["p_rows"])
-            return types.SimpleNamespace(data={"inserted":len(args["p_rows"]),"unchanged":0,"skipped":0})
-        return types.SimpleNamespace(execute=execute)
-
     def table(self, _name):
         return FakeQuery(self)
 
@@ -107,8 +100,7 @@ class ImportOneMatchupTests(unittest.TestCase):
                 }
             ],
         }
-        database_fight = {"fight_id": 9, "fighter_a": {"fighter_id": 11, "full_name": "Fighter A"},
-                          "fighter_b": {"fighter_id": 12, "full_name": "Fighter B"}}
+        database_fight = {"fight_id": 9}
 
         result = self.module.import_moneylines(
             api_fight,
@@ -122,32 +114,6 @@ class ImportOneMatchupTests(unittest.TestCase):
             self.database.inserted[0]["market_commence_time"],
             "2026-08-12T01:00:00Z",
         )
-
-    def test_invalid_or_missing_quote_rejects_that_book_but_keeps_the_other_pair(self):
-        database_fight = {"fight_id": 9, "fighter_a": {"full_name": "Fighter A"},
-                          "fighter_b": {"full_name": "Fighter B"}}
-        for invalid in (0, "bad", float("nan"), 1.5, None):
-            with self.subTest(price=invalid):
-                self.database.inserted.clear()
-                def book(key, outcomes):
-                    return {"key": key, "title": key, "markets": [{"key": "h2h", "outcomes": outcomes}]}
-                result = self.module.import_moneylines({"bookmakers": [
-                    book("bad", [{"name": "Fighter A", "price": -110}, {"name": "Fighter B", "price": invalid}]),
-                    book("good", [{"name": "Fighter A", "price": -130}, {"name": "Fighter B", "price": 110}])]},
-                    database_fight, 2)
-                self.assertEqual(result["inserted"], 2)
-                self.assertEqual(len(result["errors"]), 1)
-                self.assertEqual({row["sportsbook_key"] for row in self.database.inserted}, {"good"})
-
-    def test_one_sided_and_duplicate_outcomes_never_refresh_a_partial_pair(self):
-        fight = {"fight_id": 9, "fighter_a": {"full_name": "Fighter A"}, "fighter_b": {"full_name": "Fighter B"}}
-        for names in ([], ["Fighter A"], ["Fighter A", "Fighter A"], ["Fighter A", "Fighter B", "Fighter A"]):
-            with self.subTest(names=names):
-                result = self.module.import_moneylines({"bookmakers": [{"key": "bad", "title": "Bad", "markets": [
-                    {"key": "h2h", "outcomes": [{"name": name, "price": 110} for name in names]}]}]}, fight, 2)
-                self.assertEqual(result["inserted"], 0)
-                self.assertEqual(len(result["errors"]), 1)
-                self.assertEqual(self.database.inserted, [])
 
 
 if __name__ == "__main__":

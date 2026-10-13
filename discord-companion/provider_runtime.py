@@ -9,7 +9,7 @@ import sys
 
 from setup_discord import SetupError
 
-EXPECTED_PROVIDER_CORE_VERSION = "1.1"
+EXPECTED_PROVIDER_CORE_VERSION = "1.0"
 EXPECTED_ACTIVE_PROMOTIONS = ("ufc", "dwcs", "pfl", "one", "bkfc", "lfa")
 ARCHIVED_PROMOTIONS = ("rizin",)
 
@@ -26,7 +26,7 @@ def configure_provider_core(dashboard) -> dict:
     if not manifest_path.is_file():
         raise SetupError(
             "This Discord release requires the matching dashboard provider core. "
-            "Select the personal reliability 12.1 dashboard folder in 04-CONNECT-DASHBOARD."
+            "Select the Phase 8 / v12 dashboard folder in 04-CONNECT-DASHBOARD."
         )
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

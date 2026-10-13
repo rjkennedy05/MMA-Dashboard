@@ -30,9 +30,8 @@ const PROMOTION_ALIASES = Object.fromEntries(
   SUPPORTED_PROMOTIONS.map(({ key, aliases }) => [key, aliases])
 );
 
-function issueMatchesPromotion(issue, promotionKey, cards = []) {
-  const card = cards.find((row) => row.event_id === issue?.event_id);
-  const promotion = String(issue?.promotion ?? card?.promotion ?? "").trim().toLowerCase();
+function issueMatchesPromotion(issue, promotionKey) {
+  const promotion = String(issue?.promotion ?? "").trim().toLowerCase();
   return (PROMOTION_ALIASES[promotionKey] ?? [promotionKey]).some((alias) =>
     promotion === alias || promotion.includes(alias)
   );
@@ -106,13 +105,11 @@ function dynamicCoverage(summary, provider, promotionKey) {
     ? summary?.provider_runs?.espn_mma?.status
     : summary?.provider_runs?.[provider]?.status;
 
-  const matchingIssues = [...(summary?.quality_audit?.issues ?? []), ...(summary?.catalog_issues ?? []),
-                          ...(summary?.publication_readiness?.disputes ?? [])].filter((issue) =>
-    issueMatchesPromotion(issue, promotionKey, summary?.quality_audit?.cards)
+  const matchingIssues = (summary?.quality_audit?.issues ?? []).filter((issue) =>
+    issueMatchesPromotion(issue, promotionKey)
   );
 
   if (matchingIssues.some((issue) => issue.code === "CARD_EMPTY")) return "Card gap";
-  if (matchingIssues.some((issue) => ["CARD_IMPORT_REVIEW", "CARD_SOURCE_OMISSION", "CARD_SOURCE_EMPTY"].includes(issue.code))) return "Card gap";
   if (matchingIssues.some((issue) =>
     ["MISSING_EVENT", "CATALOG_UNAVAILABLE", "CATALOG_IMPORT_FAILED"].includes(issue.code)
   )) return "Catalog gap";
@@ -267,9 +264,7 @@ export default function DataSyncStatus({
     ? syncRun.summary.warnings
     : [];
   const qualityAudit = syncRun?.summary?.quality_audit ?? {};
-  const qualityIssues = [...new Map([...(Array.isArray(qualityAudit.issues) ? qualityAudit.issues : []),
-    ...(syncRun?.summary?.publication_readiness?.disputes ?? [])].map(issue =>
-      [`${issue.code}:${issue.event_id ?? issue.event_name ?? ""}:${JSON.stringify(issue.fight_ids ?? [])}`, issue])).values()];
+  const qualityIssues = Array.isArray(qualityAudit.issues) ? qualityAudit.issues : [];
   const hasQualityGaps = qualityAudit.status === "gaps_found";
   const apiSportsRun = syncRun?.summary?.provider_runs?.api_sports_mma;
   const fightOddsRun = syncRun?.summary?.provider_runs?.fightodds;

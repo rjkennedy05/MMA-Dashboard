@@ -4,11 +4,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fight_stats_scraper import scrape_fight_stats
-from uploader import supabase, get_ufcstats_source_id
-from providers.persistence import find_identity, save_entity, save_rows
+from uploader import supabase
 
 
-
+UFCSTATS_SOURCE_ID = 1
 
 
 STAT_COLUMNS = {
@@ -47,8 +46,24 @@ def get_external_id(url: str) -> str:
     return url.rstrip("/").split("/")[-1]
 
 
-def find_external_mapping(entity_type: str, external_id: str):
-    return find_identity(supabase, entity_type, get_ufcstats_source_id(), external_id)
+def find_external_mapping(
+    entity_type: str,
+    external_id: str,
+) -> dict[str, Any] | None:
+    response = (
+        supabase
+        .table("external_ids")
+        .select("internal_id")
+        .eq("entity_type", entity_type)
+        .eq("source_id", UFCSTATS_SOURCE_ID)
+        .eq("external_id", external_id)
+        .execute()
+    )
+
+    if response.data:
+        return response.data[0]
+
+    return None
 
 
 def get_fight_id(fight_url: str) -> int:
@@ -99,7 +114,7 @@ def create_empty_round_row(
         "fight_id": fight_id,
         "fighter_id": fighter_id,
         "round_number": round_number,
-        "source_id": get_ufcstats_source_id(),
+        "source_id": UFCSTATS_SOURCE_ID,
         "recorded_at": recorded_at,
         "updated_at": recorded_at,
         "extra_stats": {},
@@ -223,8 +238,22 @@ def import_fight_round_stats(
     processed_count = 0
 
     for chunk in chunk_rows(rows):
-        saved = save_rows(supabase,"fight_round_stats",chunk)
-        if saved is None:
+        response = (
+            supabase
+            .table("fight_round_stats")
+            .upsert(
+                chunk,
+                on_conflict=(
+                    "fight_id,"
+                    "fighter_id,"
+                    "round_number,"
+                    "source_id"
+                ),
+            )
+            .execute()
+        )
+
+        if response.data is None:
             raise RuntimeError(
                 "Round-stat upsert returned "
                 "no response data."

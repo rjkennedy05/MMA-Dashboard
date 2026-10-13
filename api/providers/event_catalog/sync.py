@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from typing import Any
 
 from .client import CATALOG_URLS, OfficialCatalogClient
@@ -33,14 +31,13 @@ def sync_official_catalogs(
 
     client = OfficialCatalogClient()
     importer = OfficialCatalogImporter(supabase)
-    today = datetime.now(ZoneInfo("America/Chicago")).date()
+    today = date.today()
     start, end = today - timedelta(days=past_days), today + timedelta(days=future_days)
     result: dict[str, Any] = {
         "status": "completed",
         "requests": 0,
         "catalogs": {},
         "issues": [],
-        "entries": [],
     }
 
     for catalog in catalog_keys:
@@ -55,10 +52,9 @@ def sync_official_catalogs(
         result["catalogs"][catalog] = metrics
         try:
             html, source_url = client.get_catalog(catalog)
-            parsed = parse_official_catalog(html, catalog, source_url, reference_date=today)
             entries = [
                 row
-                for row in parsed
+                for row in parse_official_catalog(html, catalog, source_url)
                 if start <= row["date"] <= end
                 and (
                     requested_scope in {"all", catalog}
@@ -66,24 +62,14 @@ def sync_official_catalogs(
                 )
             ]
             metrics["events"] = len(entries)
-            metrics["dated_events_on_page"] = len(parsed)
             metrics["source"] = CATALOG_URLS[catalog]
-            if not parsed or not any(
-                today - timedelta(days=366) <= row["date"] <= today + timedelta(days=366)
-                for row in parsed
-            ):
+            if not entries:
                 raise RuntimeError(
-                    f"{catalog.upper()} official catalog returned no verifiable recent/upcoming dated events."
+                    f"{catalog.upper()} official catalog returned no dated events in the coverage window."
                 )
             for entry in entries:
                 try:
                     imported = importer.import_event(entry, dry_run=dry_run)
-                    result["entries"].append({
-                        "external_id": entry["external_id"],
-                        "event_id": imported.get("event_id"), "promotion_key": entry["promotion_key"],
-                        "name": entry["name"], "date": entry["date"].isoformat(),
-                        "external_url": entry.get("external_url"),
-                    })
                     state = imported["status"]
                     if state == "imported":
                         metrics["imported"] += 1
@@ -120,6 +106,6 @@ def sync_official_catalogs(
             })
 
     result["requests"] = client.request_count
-    if any(row["status"] in {"failed", "partial"} for row in result["catalogs"].values()):
+    if any(row["status"] == "failed" for row in result["catalogs"].values()):
         result["status"] = "partial"
     return result

@@ -37,10 +37,6 @@ from providers.api_sports_mma.client import (  # noqa: E402
 )
 from providers.api_sports_mma.normalizer import normalize_history  # noqa: E402
 from providers.manifest import is_active_promotion  # noqa: E402
-from sync.lease import SyncLease, ImportBusyError
-from providers.persistence import save_rows
-from providers.errors import safe_error
-from zoneinfo import ZoneInfo
 from uploader import supabase  # noqa: E402
 
 
@@ -134,7 +130,7 @@ class HistoryRepository:
         self._fallback_count_cache: dict[int, int] = {}
 
     def upcoming_fighters(self, days: int, due_only: bool = False) -> list[dict[str, Any]]:
-        today = datetime.now(ZoneInfo("America/Chicago")).date()
+        today = date.today()
         end = today + timedelta(days=days)
         event_response = (
             supabase.table("events")
@@ -280,7 +276,6 @@ class HistoryRepository:
         source_id: int,
         history: list[dict[str, Any]],
     ) -> int:
-        payloads=[]
         for entry in history:
             stored_entry = {
                 key: value
@@ -293,9 +288,10 @@ class HistoryRepository:
                 **stored_entry,
                 "updated_at": utc_now(),
             }
-            payloads.append(payload)
-        if payloads:
-            save_rows(supabase,"fighter_history_entries",payloads)
+            supabase.table("fighter_history_entries").upsert(
+                payload,
+                on_conflict="fighter_id,source_id,external_bout_id",
+            ).execute()
         resolved_count = resolved_history_count(history)
         self._fallback_count_cache[fighter_id] = max(
             self._fallback_count_cache.get(fighter_id, 0), resolved_count
@@ -330,7 +326,10 @@ class HistoryRepository:
             "next_check_at": (checked_at + timedelta(days=7)).isoformat(),
             "updated_at": checked_at.isoformat(),
         }
-        save_rows(supabase,"fighter_history_coverage",[payload])
+        supabase.table("fighter_history_coverage").upsert(
+            payload,
+            on_conflict="fighter_id",
+        ).execute()
 
 
 def compatible_duplicate(
@@ -435,9 +434,9 @@ def audit_fighter(
                     )
                     return {"status": "fallback_history", "bouts": count}
         except ApiSportsMmaError as error:
-            attempts.append({"source": "API-Sports MMA history", "result": f"unavailable: {safe_error(error)}"})
+            attempts.append({"source": "API-Sports MMA history", "result": f"unavailable: {error}"})
         except Exception as error:
-            attempts.append({"source": "API-Sports MMA history", "result": f"error: {safe_error(error)}"})
+            attempts.append({"source": "API-Sports MMA history", "result": f"error: {error}"})
     else:
         attempts.append({"source": "API-Sports MMA history", "result": "not configured"})
 
@@ -475,9 +474,9 @@ def audit_fighter(
                 )
                 return {"status": "fallback_history", "bouts": count}
     except FighterHistoryProviderError as error:
-        attempts.append({"source": "Sherdog targeted history", "result": f"unavailable: {safe_error(error)}"})
+        attempts.append({"source": "Sherdog targeted history", "result": f"unavailable: {error}"})
     except Exception as error:
-        attempts.append({"source": "Sherdog targeted history", "result": f"error: {safe_error(error)}"})
+        attempts.append({"source": "Sherdog targeted history", "result": f"error: {error}"})
 
     if best_count:
         status = "partial_history"
@@ -496,7 +495,7 @@ def audit_fighter(
     return {"status": status, "bouts": best_count}
 
 
-def save_run(summary: dict[str, Any], run_id=None):
+def save_run(summary: dict[str, Any]) -> None:
     record = {
         "started_at": summary["started_at"],
         "finished_at": summary["finished_at"],
@@ -508,13 +507,10 @@ def save_run(summary: dict[str, Any], run_id=None):
         "needs_review": summary["needs_review"],
         "summary": summary,
     }
-    if run_id is not None: record["history_maintenance_run_id"]=run_id
-    saved=save_rows(supabase,"history_maintenance_runs",[record])
-    if not saved: raise RuntimeError("History run status was not saved.")
-    return saved[0]["history_maintenance_run_id"]
+    supabase.table("history_maintenance_runs").insert(record).execute()
 
 
-def build_parser():
+def main() -> int:
     configure_utf8_console()
     parser = argparse.ArgumentParser(description="Maintain history coverage for upcoming fighters.")
     parser.add_argument("--upcoming-days", type=int, default=21)
@@ -522,10 +518,8 @@ def build_parser():
     parser.add_argument("--skip-provider-refresh", action="store_true")
     parser.add_argument("--due-only", action="store_true")
     parser.add_argument("--max-fighters", type=int, default=0)
-    return parser
+    args = parser.parse_args()
 
-
-def execute_maintenance(args) -> int:
     summary: dict[str, Any] = {
         "started_at": utc_now(),
         "finished_at": None,
@@ -539,7 +533,6 @@ def execute_maintenance(args) -> int:
         "needs_review": 0,
         "errors": [],
     }
-    run_id=save_run(summary)
     print("=" * 64)
     print("MMA DASHBOARD WEEKLY HISTORY MAINTENANCE")
     print("=" * 64)
@@ -595,15 +588,15 @@ def execute_maintenance(args) -> int:
                 summary["needs_review"] += 1
                 summary["errors"].append({
                     "fighter": fighter["full_name"],
-                    "message": safe_error(error),
-                    "context": safe_error(traceback.format_exc(limit=4)),
+                    "message": str(error),
+                    "context": traceback.format_exc(limit=4),
                 })
-                print(f"  HISTORY CHECK FAILED — {safe_error(error)}")
+                print(f"  HISTORY CHECK FAILED — {error}")
     except Exception as error:
         summary["errors"].append({
             "fighter": None,
-            "message": safe_error(error),
-            "context": safe_error(traceback.format_exc(limit=5)),
+            "message": str(error),
+            "context": traceback.format_exc(limit=5),
         })
 
     summary["finished_at"] = utc_now()
@@ -614,11 +607,14 @@ def execute_maintenance(args) -> int:
     else:
         summary["status"] = "success"
 
-    save_run(summary,run_id)
     REPORTS_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     report = REPORTS_ROOT / f"history_{stamp}.json"
     report.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        save_run(summary)
+    except Exception as error:
+        print(f"WARNING — history status could not be saved: {error}")
 
     print("=" * 64)
     print(f"Status:              {summary['status'].upper()}")
@@ -632,17 +628,6 @@ def execute_maintenance(args) -> int:
     # Missing public history is a coverage finding, not a broken scheduled
     # task. Only technical errors should produce a failing process code.
     return 1 if summary["errors"] else 0
-
-
-def main() -> int:
-    args=build_parser().parse_args()
-    try:
-        with SyncLease(supabase):
-            return execute_maintenance(args)
-    except ImportBusyError as error:
-        print(safe_error(error)); return 75
-    except Exception as error:
-        print("History maintenance stopped: "+safe_error(error)); return 1
 
 
 if __name__ == "__main__":

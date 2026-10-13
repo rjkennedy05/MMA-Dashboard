@@ -1,17 +1,4 @@
-# MMA FightCenter — personal reliability 12.1.0
-
-This release strengthens imports, saved bets, odds freshness, Discord
-synchronization, and automatic jobs while keeping the existing dashboard layout.
-The current repair checkpoint pairs with **Discord Companion 6.3 / provider core
-1.1**, readiness schema 3, and the existing Supabase database upgraded through
-migration 036. Follow [RELIABILITY-REPAIRS.md](RELIABILITY-REPAIRS.md) for the current
-update and recovery steps. Earlier release documents describe their historical
-checkpoints.
-
-See [PERSONAL-RELIABILITY-12.1.md](PERSONAL-RELIABILITY-12.1.md) for the changes,
-risks, installation sequence, verification, and recovery. The original v12/v6.1
-sources and the 12.0.1 checkpoint remain preserved; no live database or Discord
-messages were changed during this implementation.
+# MMA FightCenter — Phase 8 v12
 
 MMA FightCenter is a desktop-first research and betting workspace for UFC,
 DWCS, PFL, ONE, BKFC, and LFA. It combines current fight cards, fighter career
@@ -62,20 +49,15 @@ deleted. Historical RIZIN tickets remain available in Results & ROI.
 
 ## Install or upgrade
 
-For the current existing personal installation, follow
-[RELIABILITY-REPAIRS.md](RELIABILITY-REPAIRS.md). The older v11.2-to-v12 sequence is
-in `UPGRADE-PHASE8-V12.md`. The current incremental upgrades are:
+See `UPGRADE-PHASE8-V12.md` for the exact v11.2-to-v12 sequence. One new,
+repeat-safe Supabase migration is required:
 
 ```text
-supabase/upgrade-personal-12.1.0.sql     # Existing v12 through 030 → 035
-supabase/upgrade-personal-resilience.sql # Existing personal database through 035 → 036
+supabase/migrations/202610050030_add_event_catalog_sources.sql
 ```
 
-An installation already through `035` needs only the resilience upgrade. An
-older v12 installation through `030` needs both upgrades in the listed order.
-A fresh database also requires the
-original core schema, which is not included in these incremental migrations.
-After restoring that schema, apply migrations in filename order.
+For a fresh installation, run every migration in filename order. For an
+existing v11.2 installation, run only migration `030`.
 
 Create/copy these private files locally; they are intentionally not packaged:
 
@@ -174,7 +156,7 @@ reset that archives rather than deletes the earlier sample.
 ## Discord v6 contract
 
 Discord v6 must be connected to this exact dashboard folder with
-  `04-CONNECT-DASHBOARD.bat`. It verifies provider-core version `1.1`, waits for
+`04-CONNECT-DASHBOARD.bat`. It verifies provider-core version `1.0`, waits for
 the current full daily dashboard run to reach success or partial, and only then
 publishes the morning snapshot. Manual `/refreshfight` and `/refreshodds`
 commands remain available for active event channels.
@@ -194,8 +176,6 @@ npm run test:catalog
 npm run test:odds
 npm run test:history
 npm run test:retention
-npm run test:identity
-npm run test:database
 python -m compileall -q api
 ```
 

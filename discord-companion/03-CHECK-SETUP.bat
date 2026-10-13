@@ -4,6 +4,6 @@ where py >nul 2>nul
 if errorlevel 1 (
     python setup_discord.py --check
 ) else (
-    py -3.12 setup_discord.py --check
+    py -3 setup_discord.py --check
 )
 pause

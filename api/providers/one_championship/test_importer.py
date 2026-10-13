@@ -1,5 +1,4 @@
 import unittest
-from api.tests.fakes import rpc as fake_rpc
 
 from api.providers.one_championship.importer import OneChampionshipImporter
 
@@ -60,8 +59,6 @@ class FakeExternalIdsQuery:
 
 
 class FakeSupabase:
-    rpc = fake_rpc
-
     def __init__(self, rows=None):
         self.external_ids = list(rows or [])
 

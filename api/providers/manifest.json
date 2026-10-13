@@ -1,50 +1,14 @@
 {
-  "provider_core_version": "1.1",
-  "active_promotions": [
-    "ufc",
-    "dwcs",
-    "pfl",
-    "one",
-    "bkfc",
-    "lfa"
-  ],
-  "archived_promotions": [
-    "rizin"
-  ],
+  "provider_core_version": "1.0",
+  "active_promotions": ["ufc", "dwcs", "pfl", "one", "bkfc", "lfa"],
+  "archived_promotions": ["rizin"],
   "aliases": {
-    "ufc": [
-      "ufc",
-      "ultimate fighting championship"
-    ],
-    "dwcs": [
-      "dwcs",
-      "dana white's contender series",
-      "dana whites contender series",
-      "dana white contender series",
-      "contender series"
-    ],
-    "pfl": [
-      "pfl",
-      "professional fighters league"
-    ],
-    "one": [
-      "one",
-      "one championship",
-      "one fc"
-    ],
-    "bkfc": [
-      "bkfc",
-      "bare knuckle fighting championship"
-    ],
-    "lfa": [
-      "lfa",
-      "legacy fighting alliance"
-    ],
-    "rizin": [
-      "rizin",
-      "rizin fighting federation",
-      "rizin ff"
-    ]
-  },
-  "reliability_schema": 36
+    "ufc": ["ufc", "ultimate fighting championship"],
+    "dwcs": ["dwcs", "dana white's contender series", "dana whites contender series", "dana white contender series", "contender series"],
+    "pfl": ["pfl", "professional fighters league"],
+    "one": ["one", "one championship", "one fc"],
+    "bkfc": ["bkfc", "bare knuckle fighting championship"],
+    "lfa": ["lfa", "legacy fighting alliance"],
+    "rizin": ["rizin", "rizin fighting federation", "rizin ff"]
+  }
 }

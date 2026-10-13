@@ -4,11 +4,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fight_stats_scraper import scrape_fight_stats
-from uploader import supabase, get_ufcstats_source_id
-from providers.persistence import find_identity, save_entity, save_rows
+from uploader import supabase
 
 
-
+UFCSTATS_SOURCE_ID = 1
 
 
 def utc_now() -> str:
@@ -19,8 +18,26 @@ def get_external_id(url: str) -> str:
     return url.rstrip("/").split("/")[-1]
 
 
-def find_external_mapping(entity_type: str, external_id: str):
-    return find_identity(supabase, entity_type, get_ufcstats_source_id(), external_id)
+def find_external_mapping(
+    entity_type: str,
+    external_id: str,
+) -> dict[str, Any] | None:
+    response = (
+        supabase
+        .table("external_ids")
+        .select(
+            "external_id_map_id, internal_id"
+        )
+        .eq("entity_type", entity_type)
+        .eq("source_id", UFCSTATS_SOURCE_ID)
+        .eq("external_id", external_id)
+        .execute()
+    )
+
+    if response.data:
+        return response.data[0]
+
+    return None
 
 
 def get_fight_id(fight_url: str) -> int:
@@ -80,7 +97,7 @@ def build_database_rows(
                 "stat_value": stat["stat_value"],
                 "stat_unit": stat["stat_unit"],
                 "round_number": stat["round_number"],
-                "source_id": get_ufcstats_source_id(),
+                "source_id": UFCSTATS_SOURCE_ID,
                 "recorded_at": recorded_at,
             }
         )
@@ -142,8 +159,23 @@ def import_fight_stats(
     processed_count = 0
 
     for chunk in chunk_rows(rows):
-        saved = save_rows(supabase,"fight_stats",chunk)
-        if saved is None:
+        response = (
+            supabase
+            .table("fight_stats")
+            .upsert(
+                chunk,
+                on_conflict=(
+                    "fight_id,"
+                    "fighter_id,"
+                    "stat_name,"
+                    "round_number,"
+                    "source_id"
+                ),
+            )
+            .execute()
+        )
+
+        if response.data is None:
             raise RuntimeError(
                 "Fight-stat upsert returned "
                 "no response data."

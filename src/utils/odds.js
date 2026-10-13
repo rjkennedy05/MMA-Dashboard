@@ -1,5 +1,3 @@
-import aliases from "../../api/providers/sportsbooks.json" with { type: "json" };
-
 export function americanOddsToImpliedProbability(americanOdds) {
   const odds = Number(americanOdds);
 
@@ -77,10 +75,8 @@ function compareSnapshots(a, b) {
 export function buildMoneylineHistory(rows) {
   const seriesBySportsbook = new Map();
 
-  for (let row of Array.isArray(rows) ? rows : []) {
-    const raw=String(row.sportsbook_key || row.sportsbook || "unknown").toLowerCase();
-    const identity=aliases[raw.replace(/[^a-z0-9]/g,"")] || raw;
-    row={...row,sportsbook_key:identity};
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const identity = row.sportsbook_key || row.sportsbook || "unknown";
     const key = [row.fight_id, row.fighter_id, identity].join(":");
 
     if (!seriesBySportsbook.has(key)) {
@@ -112,9 +108,6 @@ export function buildMoneylineHistory(rows) {
     const finalTracked = preFightSnapshots.at(-1) ?? null;
     const fightId = latest.fight_id;
     const fighterId = latest.fighter_id;
-    const counts=new Map();
-    for(const snapshot of snapshots)if(snapshot.snapshot_group && Number(snapshot.snapshot_count)>0)
-      counts.set(snapshot.snapshot_group,Number(snapshot.snapshot_count));
 
     if (!grouped[fightId]) {
       grouped[fightId] = {};
@@ -130,7 +123,7 @@ export function buildMoneylineHistory(rows) {
       first_tracked_at: first.recorded_at,
       opening_odds: first.american_odds,
       opening_recorded_at: first.recorded_at,
-      snapshot_count: counts.size ? [...counts.values()].reduce((total,count)=>total+count,0) : snapshots.length,
+      snapshot_count: snapshots.length,
       market_commence_time: commenceTime,
       final_tracked_odds: finalTracked?.american_odds ?? null,
       final_tracked_at: finalTracked?.recorded_at ?? null,

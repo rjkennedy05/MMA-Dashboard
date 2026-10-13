@@ -1,7 +1,7 @@
 {
   "name": "mma-dashboard",
   "private": true,
-  "version": "12.1.0",
+  "version": "12.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,8 +20,6 @@
     "test:odds": "python -m unittest discover -s api/providers/the_odds_api -p test_*.py",
     "test:retention": "python -m unittest api.sync.test_incremental api.sync.test_retention api.sync.test_transient_retry api.sync.test_card_reconciliation api.sync.test_data_quality api.sync.test_freshness",
     "test:history": "python -m unittest discover -s api/providers/fighter_history -p test_*.py",
-    "test:identity": "python -m unittest api.providers.test_fight_identity",
-    "test:database": "node --test supabase/tests/*.test.mjs",
     "sync:now": "python api/sync/weekly_sync.py --mode daily",
     "sync:repair": "python api/sync/weekly_sync.py --mode repair --past-days 30 --future-days 90 --full-repair",
     "sync:ufc": "python api/sync/weekly_sync.py --mode daily --skip-pfl --skip-one --skip-lfa --skip-bkfc --skip-odds --skip-retention --requested-scope ufc",
@@ -30,7 +28,7 @@
     "sync:one": "python api/sync/weekly_sync.py --mode daily --skip-ufc --skip-pfl --skip-lfa --skip-bkfc --skip-odds --skip-stats --skip-retention --requested-scope one",
     "sync:lfa": "python api/sync/weekly_sync.py --mode daily --skip-ufc --skip-pfl --skip-one --skip-bkfc --skip-odds --skip-stats --skip-retention --requested-scope lfa",
     "sync:bkfc": "python api/sync/weekly_sync.py --mode daily --skip-ufc --skip-pfl --skip-one --skip-lfa --skip-odds --skip-stats --skip-retention --requested-scope bkfc",
-    "sync:odds": "python api/sync/weekly_sync.py --mode daily --requested-scope odds --skip-catalog --skip-ufc --skip-pfl --skip-one --skip-lfa --skip-bkfc --skip-stats --skip-retention",
+    "sync:odds": "python api/sync/weekly_sync.py --mode daily --skip-catalog --skip-ufc --skip-pfl --skip-one --skip-lfa --skip-bkfc --skip-stats --skip-retention",
     "sync:dry-run": "python api/sync/weekly_sync.py --mode daily --dry-run --skip-odds --skip-stats",
     "sync:history": "python api/sync/weekly_sync.py --mode maintenance --past-days 3650 --future-days 90 --skip-ufcstats --skip-odds --skip-stats --skip-retention --skip-catalog --no-dashboard-status",
     "sync:history:maintenance": "python api/sync/history_maintenance.py",
@@ -40,9 +38,7 @@
     "sync:history:lfa": "python api/sync/weekly_sync.py --mode maintenance --past-days 3650 --future-days 90 --skip-ufc --skip-pfl --skip-one --skip-bkfc --skip-odds --skip-stats --skip-retention --skip-catalog --no-dashboard-status --requested-scope lfa",
     "sync:history:bkfc": "python api/sync/weekly_sync.py --mode maintenance --past-days 3650 --future-days 90 --skip-ufc --skip-pfl --skip-one --skip-lfa --skip-odds --skip-stats --skip-retention --skip-catalog --no-dashboard-status --requested-scope bkfc",
     "retention:preview": "python api/sync/retention.py --preview",
-    "retention:apply": "python api/sync/retention.py",
-    "test:services": "node --test src/services/*.test.mjs",
-    "test:all": "python scripts/check_project.py"
+    "retention:apply": "python api/sync/retention.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.111.0",
@@ -51,14 +47,10 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.9",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "oxlint": "^1.71.0",
     "vite": "^8.1.1"
-  },
-  "engines": {
-    "node": ">=24 <25"
   }
 }

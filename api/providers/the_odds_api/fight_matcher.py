@@ -3,8 +3,7 @@ from __future__ import annotations
 import re
 import sys
 import unicodedata
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -94,7 +93,7 @@ def parse_api_date(
         )
     )
 
-    return parsed.astimezone(ZoneInfo("America/Chicago")).date() if parsed.tzinfo else parsed.date()
+    return parsed.date()
 
 
 def load_database_fights(
@@ -122,12 +121,10 @@ def load_database_fights(
             )
             """
         )
-        .gte("events.event_date",(datetime.now(ZoneInfo("America/Chicago")).date()-timedelta(days=2)).isoformat())
-        .lte("events.event_date",(datetime.now(ZoneInfo("America/Chicago")).date()+timedelta(days=90)).isoformat())
         .execute()
     )
 
-    return [row for row in (response.data or []) if row.get("fight_status") not in {"cancelled","completed","draw","no_contest"}]
+    return response.data or []
 
 
 def match_api_fight(

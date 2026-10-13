@@ -1,67 +1,4 @@
-import { readRows } from "./readRows";
-import { mergeFighterHistories } from "../utils/historyMerge";
 import { supabase } from "../lib/supabase";
-
-const COVERAGE_SELECT = `
-      fighter_id,
-      history_fighter_id,
-      coverage_status,
-      record_summary,
-      known_bout_count,
-      source_used,
-      coverage_note,
-      last_checked_at,
-      next_check_at
-    `;
-
-const OFFICIAL_SELECT = `
-      fight_id,
-      event_id,
-      fighter_a_id,
-      fighter_b_id,
-      fight_status,
-      ruleset,
-      winner_id,
-      result_type,
-      method,
-      finish_round,
-      finish_time_seconds,
-      is_title_fight,
-      events (
-        event_name,
-        event_date,
-        promotions (name)
-      ),
-      fighter_a:fighters!fights_fighter_a_id_fkey (
-        fighter_id,
-        full_name,
-        record_summary
-      ),
-      fighter_b:fighters!fights_fighter_b_id_fkey (
-        fighter_id,
-        full_name,
-        record_summary
-      ),
-      weight_classes (name)
-    `;
-
-const FALLBACK_SELECT = `
-      fighter_history_entry_id,
-      fighter_id,
-      source_id,
-      event_name,
-      event_date,
-      promotion_name,
-      opponent_name,
-      opponent_record,
-      outcome,
-      method,
-      finish_round,
-      finish_time_seconds,
-      fight_status,
-      is_title_fight,
-      source_url
-    `;
 
 function recordWins(record) {
   const match = String(record ?? "").match(/^(\d+)\s*[-–]/);
@@ -108,7 +45,6 @@ function normalizeHistoryFight(fight, fighterId) {
     round: fight.finish_round ?? null,
     timeSeconds: fight.finish_time_seconds ?? null,
     status: fight.fight_status,
-    ruleset: fight.ruleset??"MMA",
     titleFight: Boolean(fight.is_title_fight),
     weightClass: fight.weight_classes?.name ?? null,
   };
@@ -164,28 +100,124 @@ function normalizeFallbackFight(entry) {
   };
 }
 
-export async function getFighterHistoryRecords(fighterIds,excludeFightId=null) {
-  const ids=[...new Set((fighterIds??[]).filter(Boolean).map(Number))];
-  if(!ids.length)return {};
-  const coverageRows=await readRows(()=>supabase.from("fighter_history_coverage").select(COVERAGE_SELECT).in("fighter_id",ids),"fighter_id");
-  const coverageById=Object.fromEntries(coverageRows.map(c=>[c.fighter_id,c]));
-  const officialIds=[...new Set(ids.flatMap(id=>[id,coverageById[id]?.history_fighter_id]).filter(Boolean))];
-  const [officialRows,fallbackRows]=await Promise.all([
-    readRows(()=>supabase.from("fights").select(OFFICIAL_SELECT).or(`fighter_a_id.in.(${officialIds.join(",")}),fighter_b_id.in.(${officialIds.join(",")})`),"fight_id"),
-    readRows(()=>supabase.from("fighter_history_entries").select(FALLBACK_SELECT).in("fighter_id",ids),"fighter_history_entry_id"),
-  ]);
-  return Object.fromEntries(ids.map(id=>{
-    const linked=new Set([id,Number(coverageById[id]?.history_fighter_id)].filter(Boolean));
-    const official=officialRows.filter(f=>Number(f.fight_id)!==Number(excludeFightId) && (linked.has(Number(f.fighter_a_id))||linked.has(Number(f.fighter_b_id))))
-      .map(f=>normalizeHistoryFight(f,linked.has(Number(f.fighter_a_id))?f.fighter_a_id:f.fighter_b_id));
-    const fallback=fallbackRows.filter(f=>Number(f.fighter_id)===id).map(normalizeFallbackFight);
-    return [id,{history:mergeFighterHistories(official,fallback),coverage:coverageById[id]??null}];
-  }));
+async function getCoverage(fighterId) {
+  const { data, error } = await supabase
+    .from("fighter_history_coverage")
+    .select(`
+      fighter_id,
+      history_fighter_id,
+      coverage_status,
+      record_summary,
+      known_bout_count,
+      source_used,
+      coverage_note,
+      last_checked_at,
+      next_check_at
+    `)
+    .eq("fighter_id", fighterId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
 }
 
-export async function getFighterHistoryRecord(fighterId,excludeFightId=null) {
-  if(!fighterId)return {history:[],coverage:null};
-  return (await getFighterHistoryRecords([fighterId],excludeFightId))[fighterId];
+async function getOfficialHistory(fighterId, excludeFightId = null) {
+  if (!fighterId) return [];
+
+  const { data, error } = await supabase
+    .from("fights")
+    .select(`
+      fight_id,
+      event_id,
+      fighter_a_id,
+      fighter_b_id,
+      fight_status,
+      winner_id,
+      result_type,
+      method,
+      finish_round,
+      finish_time_seconds,
+      is_title_fight,
+      events (
+        event_name,
+        event_date,
+        promotions (name)
+      ),
+      fighter_a:fighters!fights_fighter_a_id_fkey (
+        fighter_id,
+        full_name,
+        record_summary
+      ),
+      fighter_b:fighters!fights_fighter_b_id_fkey (
+        fighter_id,
+        full_name,
+        record_summary
+      ),
+      weight_classes (name)
+    `)
+    .or(`fighter_a_id.eq.${fighterId},fighter_b_id.eq.${fighterId}`);
+
+  if (error) throw error;
+
+  return (data ?? [])
+    .filter((fight) => Number(fight.fight_id) !== Number(excludeFightId))
+    .map((fight) => normalizeHistoryFight(fight, fighterId))
+    .sort((left, right) =>
+      String(right.date ?? "").localeCompare(String(left.date ?? ""))
+    );
+}
+
+async function getFallbackHistory(fighterId) {
+  const { data, error } = await supabase
+    .from("fighter_history_entries")
+    .select(`
+      fighter_history_entry_id,
+      event_name,
+      event_date,
+      promotion_name,
+      opponent_name,
+      opponent_record,
+      outcome,
+      method,
+      finish_round,
+      finish_time_seconds,
+      fight_status,
+      is_title_fight,
+      source_url
+    `)
+    .eq("fighter_id", fighterId);
+  if (error) throw error;
+  return (data ?? []).map(normalizeFallbackFight);
+}
+
+function historySignature(entry) {
+  return [
+    entry.date ?? "",
+    String(entry.opponent?.full_name ?? "").toLocaleLowerCase(),
+  ].join("|");
+}
+
+export async function getFighterHistoryRecord(fighterId, excludeFightId = null) {
+  if (!fighterId) return { history: [], coverage: null };
+  const coverage = await getCoverage(fighterId);
+  const officialIds = [...new Set([
+    fighterId,
+    coverage?.history_fighter_id,
+  ].filter(Boolean))];
+  const [officialGroups, fallback] = await Promise.all([
+    Promise.all(officialIds.map((historyFighterId) =>
+      getOfficialHistory(historyFighterId, excludeFightId)
+    )),
+    getFallbackHistory(fighterId),
+  ]);
+  const official = officialGroups.flat();
+  const known = new Set(official.map(historySignature));
+  const history = [
+    ...official,
+    ...fallback.filter((entry) => !known.has(historySignature(entry))),
+  ].sort((left, right) =>
+    String(right.date ?? "").localeCompare(String(left.date ?? ""))
+  );
+  return { history, coverage };
 }
 
 export async function getFighterHistory(fighterId, excludeFightId = null) {
@@ -200,9 +232,11 @@ export async function getMatchupHistoryRecords(fight) {
       fighterB: { history: [], coverage: null },
     };
   }
-  const records=await getFighterHistoryRecords([fight.fighter_a?.fighter_id,fight.fighter_b?.fighter_id],fight.fight_id);
-  return {fighterA:records[fight.fighter_a?.fighter_id]??{history:[],coverage:null},
-    fighterB:records[fight.fighter_b?.fighter_id]??{history:[],coverage:null}};
+  const [fighterA, fighterB] = await Promise.all([
+    getFighterHistoryRecord(fight.fighter_a?.fighter_id, fight.fight_id),
+    getFighterHistoryRecord(fight.fighter_b?.fighter_id, fight.fight_id),
+  ]);
+  return { fighterA, fighterB };
 }
 
 export async function getCardFighterHistories(fights) {
@@ -212,6 +246,11 @@ export async function getCardFighterHistories(fights) {
       fight.fighter_b?.fighter_id,
     ]).filter(Boolean)
   )];
-  const records=await getFighterHistoryRecords(fighterIds);
-  return Object.fromEntries(Object.entries(records).map(([id,value])=>[id,value.history]));
+  const entries = await Promise.all(
+    fighterIds.map(async (fighterId) => [
+      fighterId,
+      await getFighterHistory(fighterId),
+    ])
+  );
+  return Object.fromEntries(entries);
 }

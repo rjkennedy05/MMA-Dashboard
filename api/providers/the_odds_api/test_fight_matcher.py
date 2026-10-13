@@ -98,7 +98,7 @@ class FightMatcherTests(unittest.TestCase):
 
         self.assertEqual(match["status"], "unmatched")
         self.assertEqual(match["name_match_fight_id"], 44)
-        self.assertIn("3 days away", match["reason"])
+        self.assertIn("4 days away", match["reason"])
 
 
 if __name__ == "__main__":

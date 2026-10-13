@@ -1,4 +1,3 @@
-import { readRows } from "./readRows";
 import { supabase } from "../lib/supabase";
 
 export async function getFightResearch(fightId) {
@@ -24,11 +23,10 @@ export async function getFightResearchForFights(fightIds) {
     return {};
   }
 
-  const data=await readRows(()=>supabase
+  const { data, error } = await supabase
     .from("fight_research")
     .select("*")
-    .in("fight_id", fightIds),"fight_id");
-  const error=null;
+    .in("fight_id", fightIds);
 
   if (error) {
     throw error;
@@ -44,11 +42,10 @@ export async function getFightResearchCoverageForFights(fightIds) {
     return {};
   }
 
-  const data=await readRows(()=>supabase
+  const { data, error } = await supabase
     .from("fight_research")
     .select("fight_id, research_status, user_lean, assistant_pick")
-    .in("fight_id", fightIds),"fight_id");
-  const error=null;
+    .in("fight_id", fightIds);
 
   if (error) {
     throw error;

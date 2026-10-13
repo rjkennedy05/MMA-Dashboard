@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 try:
     from providers.manifest import is_active_promotion
@@ -53,11 +52,11 @@ def audit_upcoming_coverage(
 ) -> dict[str, Any]:
     """Audit upcoming-card completeness without treating distant odds as late."""
 
-    today = datetime.now(ZoneInfo("America/Chicago")).date()
+    today = date.today()
     end = today + timedelta(days=max(odds_days, history_days))
     events = (
         supabase.table("events")
-        .select("event_id,event_name,event_date,promotion_id,card_observed_at,event_status,promotions(name)")
+        .select("event_id,event_name,event_date,promotion_id,promotions(name)")
         .gte("event_date", today.isoformat())
         .lte("event_date", end.isoformat())
         .execute()
@@ -67,7 +66,7 @@ def audit_upcoming_coverage(
     events = [
         row
         for row in events
-        if is_active_promotion((row.get("promotions") or {}).get("name")) and row.get("event_status") not in {"cancelled","canceled"}
+        if is_active_promotion((row.get("promotions") or {}).get("name"))
     ]
     event_by_id = {int(row["event_id"]): row for row in events}
 
@@ -76,7 +75,7 @@ def audit_upcoming_coverage(
         fights = (
             supabase.table("fights")
             .select(
-                "fight_id,event_id,fighter_a_id,fighter_b_id,fight_status,ruleset,"
+                "fight_id,event_id,fighter_a_id,fighter_b_id,fight_status,"
                 "fighter_a:fighters!fights_fighter_a_id_fkey(full_name),"
                 "fighter_b:fighters!fights_fighter_b_id_fkey(full_name)"
             )
@@ -93,25 +92,14 @@ def audit_upcoming_coverage(
     odds: list[dict[str, Any]] = []
     if fight_ids:
         odds = (
-            supabase.table("mma_odds_observations")
-            .select("observation_id,fight_id,fighter_id,sportsbook_key,observed_at,american_odds")
+            supabase.table("odds")
+            .select("fight_id,recorded_at")
             .in_("fight_id", fight_ids)
             .execute()
             .data
             or []
         )
-    cutoff = datetime.now(timezone.utc)-timedelta(hours=24)
-    pairs = {}
-    for row in odds:
-        try:
-            stamp=datetime.fromisoformat(str(row.get("observed_at") or "").replace("Z","+00:00"))
-            price=int(row.get("american_odds") or 0)
-            if not stamp.tzinfo or stamp<cutoff or stamp>datetime.now(timezone.utc)+timedelta(minutes=5) or -100<price<100: continue
-            pairs.setdefault((int(row["fight_id"]),row["sportsbook_key"]),set()).add(int(row["fighter_id"]))
-        except (ValueError,TypeError,KeyError): continue
-    fights_with_odds = {int(f["fight_id"]) for f in active if any(
-        {int(f["fighter_a_id"]),int(f["fighter_b_id"])}<=sides
-        for (fight_id,_),sides in pairs.items() if fight_id==int(f["fight_id"]))}
+    fights_with_odds = {int(row["fight_id"]) for row in odds}
 
     issues: list[dict[str, Any]] = []
     cards: list[dict[str, Any]] = []
@@ -142,14 +130,6 @@ def audit_upcoming_coverage(
             ],
         }
         cards.append(card)
-
-        if days_until_event<=7:
-            try:
-                checked=datetime.fromisoformat(str(event.get("card_observed_at") or "").replace("Z","+00:00"))
-                verified=checked.tzinfo and checked>=datetime.now(timezone.utc)-timedelta(hours=24)
-            except ValueError:verified=False
-            if not verified:issues.append({"code":"CARD_NOT_CHECKED","severity":"warning",**card,
-                "message":"This upcoming event was not verified by a recent detailed card refresh."})
 
         if not event_fights:
             issues.append(
@@ -184,18 +164,6 @@ def audit_upcoming_coverage(
                     ),
                 }
             )
-
-    duplicate_groups={}
-    def canonical_name(value):
-        import re,unicodedata
-        return re.sub('[^a-z0-9]','',unicodedata.normalize('NFKD',value).encode('ascii','ignore').decode().casefold())
-    for fight in active:
-        names=tuple(sorted(canonical_name(_fighter_name(fight,side)) for side in ('fighter_a','fighter_b')))
-        if not all(names):continue
-        duplicate_groups.setdefault((fight['event_id'],names,fight.get('ruleset') or 'MMA'),[]).append(int(fight['fight_id']))
-    for (event_id,_,_),ids in duplicate_groups.items():
-        if len(ids)>1:issues.append({'code':'DUPLICATE_FIGHT','severity':'warning','event_id':event_id,'fight_ids':ids,
-            'message':'Stored duplicate matchups need identity review; all saved bets were retained.'})
 
     fighter_ids = sorted(
         {

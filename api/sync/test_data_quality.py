@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 from api.sync.data_quality import audit_upcoming_coverage
@@ -66,7 +66,7 @@ class DataQualityTests(unittest.TestCase):
                     "fighter_b": {"full_name": "Delta Four"},
                 },
             ],
-            "mma_odds_observations": [{"fight_id":10,"fighter_id":fid,"sportsbook_key":"draftkings","american_odds":100,"observed_at":datetime.now(timezone.utc).isoformat()} for fid in (1,2)],
+            "odds": [{"fight_id": 10, "recorded_at": "2026-09-17T00:00:00Z"}],
             "fighter_history_coverage": [
                 {"fighter_id": 1, "coverage_status": "complete", "known_bout_count": 4},
                 {"fighter_id": 2, "coverage_status": "complete", "known_bout_count": 3},

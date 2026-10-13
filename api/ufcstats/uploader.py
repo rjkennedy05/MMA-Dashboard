@@ -1,22 +1,10 @@
 import os
-import sys
 from datetime import datetime, timezone
-from functools import lru_cache
-from pathlib import Path
 
-from dotenv import load_dotenv,dotenv_values
+from dotenv import load_dotenv
 from supabase import create_client
 
 from matching import matching_event_id
-
-API_ROOT = Path(__file__).resolve().parents[1]
-if str(API_ROOT) not in sys.path:
-    sys.path.insert(0, str(API_ROOT))
-from providers.atomic import AtomicImportClient
-from providers.database import table_rows
-from providers.manifest import promotion_key
-from providers.persistence import find_identity, save_entity
-from providers.configuration import validate_project_urls
 
 
 # ==========================================
@@ -35,44 +23,33 @@ load_dotenv(ENV_PATH)
 
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = (os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
-                        or os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
+SUPABASE_SERVICE_KEY = os.getenv(
+    "SUPABASE_SERVICE_KEY"
+)
 
 
-class LazyImportClient(AtomicImportClient):
-    def __init__(self):self._raw=None
-
-    @property
-    def raw(self):
-        if self._raw is None:
-            url=os.getenv("SUPABASE_URL")
-            key=(os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
-            if not url:raise ValueError("SUPABASE_URL is missing from api/.env")
-            if not key:raise ValueError("A server-side Supabase key is missing from api/.env")
-            frontend=os.getenv("VITE_SUPABASE_URL") or dotenv_values(API_ROOT.parent/".env").get("VITE_SUPABASE_URL")
-            validate_project_urls(url,frontend)
-            self._raw=create_client(url,key)
-        return self._raw
-
-supabase = LazyImportClient()
+if not SUPABASE_URL:
+    raise ValueError(
+        "SUPABASE_URL is missing from api/.env"
+    )
 
 
-@lru_cache(maxsize=1)
-def get_ufcstats_source_id():
-    rows = table_rows(supabase, "data_sources", "source_id,name", "source_id")
-    matches = [row for row in rows if row["name"].casefold().replace(" ", "") == "ufcstats"]
-    if len(matches) != 1:
-        raise RuntimeError("UFCStats source cannot be resolved uniquely; review data_sources.")
-    return int(matches[0]["source_id"])
+if not SUPABASE_SERVICE_KEY:
+    raise ValueError(
+        "SUPABASE_SERVICE_KEY is missing "
+        "from api/.env"
+    )
 
 
-@lru_cache(maxsize=2)
-def get_promotion_id(key):
-    rows = table_rows(supabase, "promotions", "promotion_id,name", "promotion_id")
-    matches = [row for row in rows if promotion_key(row["name"]) == key]
-    if len(matches) != 1:
-        raise RuntimeError(f"{key.upper()} promotion cannot be resolved uniquely.")
-    return int(matches[0]["promotion_id"])
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_SERVICE_KEY,
+)
+
+
+UFC_PROMOTION_ID = 1
+DWCS_PROMOTION_ID = 2
+UFCSTATS_SOURCE_ID = 1
 
 
 # ==========================================
@@ -154,7 +131,36 @@ def parse_location(location):
 # ==========================================
 
 def event_exists(external_id):
-    return find_identity(supabase, "event", get_ufcstats_source_id(), external_id)
+    """
+    Check whether a UFCStats event has
+    already been imported.
+    """
+
+    response = (
+        supabase
+        .table("external_ids")
+        .select(
+            "external_id_map_id, internal_id"
+        )
+        .eq(
+            "entity_type",
+            "event",
+        )
+        .eq(
+            "source_id",
+            UFCSTATS_SOURCE_ID,
+        )
+        .eq(
+            "external_id",
+            external_id,
+        )
+        .execute()
+    )
+
+    if response.data:
+        return response.data[0]
+
+    return None
 
 
 def find_existing_event(event_data):
@@ -179,7 +185,16 @@ def find_existing_event(event_data):
 
 
 def attach_event_mapping(event_id, external_id, event_url):
-    save_entity(supabase,"event",{},get_ufcstats_source_id(),external_id,event_id,event_url)
+    supabase.table("external_ids").insert(
+        {
+            "entity_type": "event",
+            "internal_id": event_id,
+            "source_id": UFCSTATS_SOURCE_ID,
+            "external_id": external_id,
+            "external_url": event_url,
+            "updated_at": utc_now(),
+        }
+    ).execute()
 
 
 def prepare_event(event):
@@ -204,9 +219,9 @@ def prepare_event(event):
     )
 
     promotion_id = (
-        get_promotion_id("dwcs")
+        DWCS_PROMOTION_ID
         if "contender series" in normalized_event_name
-        else get_promotion_id("ufc")
+        else UFC_PROMOTION_ID
     )
 
     return {
@@ -305,11 +320,139 @@ def import_event(
             ),
         }
 
-    event_data.pop("event_status",None)
-    if existing_event_id is None:event_data["event_status"]="unknown"
-    result = save_entity(supabase, "event", compact_event_update(event_data),
-                         get_ufcstats_source_id(), external_id, existing_event_id, event_url)
-    return {"status": result["status"], "event_id": int(result["internal_id"])}
+    # ======================================
+    # Update an existing event
+    # ======================================
+
+    if existing:
+        event_id = int(
+            existing["internal_id"]
+        )
+
+        response = (
+            supabase
+            .table("events")
+            .update(compact_event_update(event_data))
+            .eq(
+                "event_id",
+                event_id,
+            )
+            .execute()
+        )
+
+        if not response.data:
+            raise RuntimeError(
+                "Event update returned no data."
+            )
+
+        (
+            supabase
+            .table("external_ids")
+            .update(
+                {
+                    "external_url": event_url,
+                    "updated_at": utc_now(),
+                }
+            )
+            .eq(
+                "external_id_map_id",
+                existing[
+                    "external_id_map_id"
+                ],
+            )
+            .execute()
+        )
+
+        print(
+            "UPDATED:",
+            event["name"],
+        )
+
+        return {
+            "status": "updated",
+            "event_id": event_id,
+        }
+
+    # Attach UFCStats to a schedule/manual row already in the dashboard.
+    if existing_event_id is not None:
+        response = (
+            supabase
+            .table("events")
+            .update(compact_event_update(event_data))
+            .eq("event_id", existing_event_id)
+            .execute()
+        )
+        if not response.data:
+            raise RuntimeError(
+                "Existing event attachment update returned no data."
+            )
+        attach_event_mapping(
+            existing_event_id,
+            external_id,
+            event_url,
+        )
+        print("ATTACHED UFCSTATS:", event["name"])
+        return {
+            "status": "updated",
+            "event_id": existing_event_id,
+        }
+
+    # ======================================
+    # Insert a new event
+    # ======================================
+
+    inserted_event = (
+        supabase
+        .table("events")
+        .insert(event_data)
+        .execute()
+    )
+
+    if not inserted_event.data:
+        raise RuntimeError(
+            "Event insert returned no data."
+        )
+
+    event_id = int(
+        inserted_event.data[0]["event_id"]
+    )
+
+    try:
+        attach_event_mapping(
+            event_id,
+            external_id,
+            event_url,
+        )
+
+    except Exception:
+        # Prevent an event from being left behind
+        # without its external-ID mapping.
+        (
+            supabase
+            .table("events")
+            .delete()
+            .eq(
+                "event_id",
+                event_id,
+            )
+            .execute()
+        )
+
+        raise
+
+    print(
+        "\nIMPORTED:",
+        event["name"],
+    )
+
+    print(
+        f"Supabase event ID: {event_id}"
+    )
+
+    return {
+        "status": "imported",
+        "event_id": event_id,
+    }
 
 
 # ==========================================
@@ -317,4 +460,23 @@ def import_event(
 # ==========================================
 
 if __name__ == "__main__":
-    raise SystemExit("Use api/sync/weekly_sync.py --mode repair to run a coordinated import. Helper modules do not run test writes against your database.")
+    test_event = {
+        "name": "UFC Import Test",
+        "event_date": "2026-07-29",
+        "location": (
+            "Las Vegas, NV, United States"
+        ),
+        "event_status": "completed",
+        "url": (
+            "http://ufcstats.com/"
+            "event-details/test-event-001"
+        ),
+    }
+
+    result = import_event(
+        test_event,
+        dry_run=True,
+    )
+
+    print("\nResult:")
+    print(result)

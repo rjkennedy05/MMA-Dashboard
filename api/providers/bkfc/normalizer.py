@@ -344,9 +344,6 @@ def _result_status(stats: dict[str, Any] | None) -> str:
         (_text(stats.get("RedResult")) or "").casefold(),
     }
     method = (_text(stats.get("WinMethod")) or "").casefold()
-    phase = " ".join([method, *values, str(stats.get("BoutStatus") or "").casefold()])
-    if any(word in phase for word in ("cancel", "withdraw", "postpon")):
-        return "cancelled"
     if "no contest" in values or "no contest" in method:
         return "no_contest"
     if "draw" in values or "draw" in method:

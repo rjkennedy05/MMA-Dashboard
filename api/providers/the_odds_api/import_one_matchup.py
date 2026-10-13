@@ -4,8 +4,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from providers.persistence import find_identity, save_entity, lease_arguments, rpc_value
-from providers.sportsbooks import sportsbook_key as canonical_book_key
 
 API_ROOT = Path(__file__).resolve().parents[2]
 UFCSTATS_ROOT = API_ROOT / "ufcstats"
@@ -142,7 +140,31 @@ def get_existing_external_mapping(
     source_id: int,
     external_id: str,
 ) -> dict[str, Any] | None:
-    return find_identity(supabase,"fight",source_id,external_id)
+    response = (
+        supabase
+        .table("external_ids")
+        .select(
+            "external_id_map_id, internal_id"
+        )
+        .eq(
+            "entity_type",
+            "fight",
+        )
+        .eq(
+            "source_id",
+            source_id,
+        )
+        .eq(
+            "external_id",
+            external_id,
+        )
+        .execute()
+    )
+
+    if response.data:
+        return response.data[0]
+
+    return None
 
 
 def create_external_mapping(
@@ -150,7 +172,21 @@ def create_external_mapping(
     fight_id: int,
     external_id: str,
 ) -> None:
-    save_entity(supabase,"fight",{},source_id,external_id,existing_id=fight_id)
+    (
+        supabase
+        .table("external_ids")
+        .insert(
+            {
+                "entity_type": "fight",
+                "internal_id": fight_id,
+                "source_id": source_id,
+                "external_id":
+                    external_id,
+                "external_url": None,
+            }
+        )
+        .execute()
+    )
 
 
 def latest_price_matches(
@@ -194,11 +230,12 @@ def import_moneylines(
     api_fight: dict[str, Any],
     database_fight: dict[str, Any],
     source_id: int,
-) -> dict[str, Any]:
+) -> dict[str, int]:
+    inserted = 0
+    unchanged = 0
     skipped = 0
 
     rows = []
-    errors = []
 
     fight_id = int(
         database_fight["fight_id"]
@@ -217,9 +254,6 @@ def import_moneylines(
 
         if not sportsbook:
             continue
-        book_start = len(rows)
-        book_invalid = False
-        moneyline_markets = 0
 
         for market in bookmaker.get(
             "markets",
@@ -227,7 +261,6 @@ def import_moneylines(
         ):
             if market.get("key") != "h2h":
                 continue
-            moneyline_markets += 1
 
             recorded_at = (
                 market.get("last_update")
@@ -254,7 +287,6 @@ def import_moneylines(
                     or price is None
                 ):
                     skipped += 1
-                    book_invalid = True
                     continue
 
                 fighter_id = (
@@ -272,16 +304,18 @@ def import_moneylines(
                     )
 
                     skipped += 1
-                    book_invalid = True
                     continue
 
-                try:
-                    american_odds = int(price)
-                    if float(price) != american_odds or -100 < american_odds < 100:
-                        raise ValueError("Invalid price")
-                except (ValueError, TypeError, OverflowError):
-                    skipped += 1
-                    book_invalid = True
+                american_odds = int(price)
+
+                if latest_price_matches(
+                    fight_id,
+                    fighter_id,
+                    sportsbook,
+                    american_odds,
+                    source_id,
+                ):
+                    unchanged += 1
                     continue
 
                 rows.append(
@@ -292,7 +326,7 @@ def import_moneylines(
                         "sportsbook":
                             sportsbook,
                         "sportsbook_key":
-                            canonical_book_key(sportsbook,sportsbook_key),
+                            sportsbook_key,
                         "market_type":
                             "moneyline",
                         "selection_name":
@@ -309,7 +343,7 @@ def import_moneylines(
                             ),
                         "source_id":
                             source_id,
-                        "provider_updated_at":
+                        "recorded_at":
                             recorded_at,
                         "market_commence_time":
                             api_fight.get(
@@ -318,22 +352,137 @@ def import_moneylines(
                     }
                 )
 
-        sides = {row["fighter_id"] for row in rows[book_start:]}
-        expected = {get_fighter_id_for_selection(database_fight, database_fight["fighter_a"]["full_name"]),
-                    get_fighter_id_for_selection(database_fight, database_fight["fighter_b"]["full_name"])}
-        if moneyline_markets and (book_invalid or moneyline_markets != 1
-                                 or len(rows) - book_start != 2 or sides != expected or None in expected):
-            skipped += len(rows) - book_start
-            del rows[book_start:]
-            errors.append({"fight_id": fight_id, "sportsbook_key": canonical_book_key(sportsbook,sportsbook_key),
-                           "message": "The source did not provide a valid pair of prices; prior book prices were retained."})
-
     if rows:
-        result = rpc_value(supabase.rpc("mma_record_odds_resilient", {"p_rows":rows,**lease_arguments()}).execute())
-        return {"inserted":result["inserted"],"unchanged":result["unchanged"],"skipped":skipped+result["skipped"],
-                "errors": errors + (result.get("errors") or [])}
-    return {"inserted":0,"unchanged":0,"skipped":skipped,"errors":errors}
+        response = (
+            supabase
+            .table("odds")
+            .insert(rows)
+            .execute()
+        )
+
+        if response.data is None:
+            raise RuntimeError(
+                "Odds insert returned "
+                "no response data."
+            )
+
+        inserted = len(rows)
+
+    return {
+        "inserted": inserted,
+        "unchanged": unchanged,
+        "skipped": skipped,
+    }
 
 
 if __name__ == "__main__":
-    raise SystemExit("Use npm run sync:odds for the current card window. This helper does not import a hard-coded demonstration matchup.")
+    try:
+        from .client import get_current_mma_moneylines
+    except ImportError:
+        from client import get_current_mma_moneylines
+    api_fights, usage = (
+        get_current_mma_moneylines()
+    )
+
+    api_fight = find_api_fight(
+        api_fights
+    )
+
+    print("\nOdds API matchup:")
+    print(
+        api_fight["home_team"],
+        "vs",
+        api_fight["away_team"],
+    )
+    print(
+        "Odds API ID:",
+        api_fight["id"],
+    )
+
+    source_id = get_odds_source_id()
+
+    existing_mapping = (
+        get_existing_external_mapping(
+            source_id,
+            api_fight["id"],
+        )
+    )
+
+    database_fights = (
+        load_database_fights()
+    )
+
+    if existing_mapping:
+        fight_id = int(
+            existing_mapping[
+                "internal_id"
+            ]
+        )
+
+        database_fight = next(
+            (
+                fight
+                for fight in database_fights
+                if int(
+                    fight["fight_id"]
+                ) == fight_id
+            ),
+            None,
+        )
+
+        if not database_fight:
+            raise RuntimeError(
+                "The external mapping points "
+                "to a missing fight."
+            )
+
+        print(
+            "Existing fight mapping:",
+            fight_id,
+        )
+
+    else:
+        match_result = match_api_fight(
+            api_fight,
+            database_fights,
+        )
+
+        if (
+            match_result["status"]
+            != "matched"
+        ):
+            raise RuntimeError(
+                "Fight matching failed: "
+                f"{match_result}"
+            )
+
+        database_fight = (
+            match_result["fight"]
+        )
+
+        fight_id = int(
+            database_fight["fight_id"]
+        )
+
+        create_external_mapping(
+            source_id,
+            fight_id,
+            api_fight["id"],
+        )
+
+        print(
+            "Created fight mapping:",
+            fight_id,
+        )
+
+    import_result = import_moneylines(
+        api_fight,
+        database_fight,
+        source_id,
+    )
+
+    print("\nOdds import result:")
+    print(import_result)
+
+    print("\nUsage:")
+    print(usage)

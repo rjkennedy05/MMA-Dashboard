@@ -7,19 +7,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$SyncScript = Join-Path $ProjectRoot "scripts\scheduled_sync.py"
-$HistoryScript = $SyncScript
-$VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-if (Test-Path $VenvPython) {
-  $PythonPath = $VenvPython
-} elseif (Get-Command py -ErrorAction SilentlyContinue) {
-  $PythonPath = & py -3.12 -c "import sys; print(sys.executable)"
-  if ($LASTEXITCODE -ne 0) { throw "Install Python 3.12 before installing the scheduled tasks." }
-} else {
-  $PythonPath = (Get-Command python -ErrorAction Stop).Source
-}
-$PythonVersion = & $PythonPath -c "import sys; print(str(sys.version_info.major) + '.' + str(sys.version_info.minor))"
-if ($PythonVersion -ne "3.12") { throw "Use Python 3.12 or this dashboard's .venv before installing the scheduled tasks." }
+$SyncScript = Join-Path $ProjectRoot "api\sync\weekly_sync.py"
+$HistoryScript = Join-Path $ProjectRoot "api\sync\history_maintenance.py"
+$PythonCommand = Get-Command python -ErrorAction Stop
+$PythonPath = $PythonCommand.Source
 
 if (-not (Test-Path $SyncScript)) {
   throw "Sync script not found: $SyncScript"
@@ -30,10 +21,10 @@ if (-not (Test-Path $HistoryScript)) {
 
 $Action = New-ScheduledTaskAction `
   -Execute $PythonPath `
-  -Argument "`"$SyncScript`" --job daily --time $($RunAt.ToString('HH:mm'))" `
+  -Argument "`"$SyncScript`" --mode daily" `
   -WorkingDirectory $ProjectRoot
 
-$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 15)
+$Trigger = New-ScheduledTaskTrigger -Daily -At $RunAt
 $Settings = New-ScheduledTaskSettingsSet `
   -StartWhenAvailable `
   -MultipleInstances IgnoreNew `
@@ -49,10 +40,13 @@ Register-ScheduledTask `
 
 $HistoryAction = New-ScheduledTaskAction `
   -Execute $PythonPath `
-  -Argument "`"$HistoryScript`" --job history --time $($HistoryRunAt.ToString('HH:mm'))" `
+  -Argument "`"$HistoryScript`"" `
   -WorkingDirectory $ProjectRoot
 
-$HistoryTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 15)
+$HistoryTrigger = New-ScheduledTaskTrigger `
+  -Weekly `
+  -DaysOfWeek Sunday `
+  -At $HistoryRunAt
 
 $HistorySettings = New-ScheduledTaskSettingsSet `
   -StartWhenAvailable `
@@ -68,7 +62,7 @@ Register-ScheduledTask `
   -Force | Out-Null
 
 Write-Host "Installed scheduled task: $TaskName"
-Write-Host "Runs daily at $($RunAt.ToString('h:mm tt')) Central Time and catches up when the PC was off."
+Write-Host "Runs daily at $($RunAt.ToString('h:mm tt')) and catches up when the PC was off."
 Write-Host "Installed scheduled task: $HistoryTaskName"
-Write-Host "Runs Sundays at $($HistoryRunAt.ToString('h:mm tt')) Central Time and audits upcoming fighter history."
+Write-Host "Runs Sundays at $($HistoryRunAt.ToString('h:mm tt')) and audits upcoming fighter history."
 Write-Host "Project: $ProjectRoot"

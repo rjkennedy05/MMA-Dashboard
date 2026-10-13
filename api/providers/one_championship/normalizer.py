@@ -347,10 +347,7 @@ def parse_fights(event: dict[str, Any], html: str) -> list[dict[str, Any]]:
             for node in matchup.select(".sticker")
         ).casefold()
 
-        if any(token in sticker_text for token in ("cancelled", "canceled", "withdrawn", "postponed")):
-            status = "cancelled"
-            result_type = None
-        elif any(winners):
+        if any(winners):
             status = "completed"
             result_type = "win"
         elif "no contest" in sticker_text:

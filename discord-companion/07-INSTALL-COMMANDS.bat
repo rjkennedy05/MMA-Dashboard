@@ -2,13 +2,13 @@
 cd /d "%~dp0"
 where py >nul 2>nul
 if errorlevel 1 (
-    python -m pip install --require-hashes -r requirements.txt
+    python -m pip install -r requirements.txt
     if errorlevel 1 goto failed
     python install_sources.py
 ) else (
-    py -3.12 -m pip install --require-hashes -r requirements.txt
+    py -3 -m pip install -r requirements.txt
     if errorlevel 1 goto failed
-    py -3.12 install_sources.py
+    py -3 install_sources.py
 )
 if errorlevel 1 goto failed
 echo Command and source packages installed. Run 05 once, then 06.

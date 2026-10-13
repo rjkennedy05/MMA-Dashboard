@@ -55,7 +55,7 @@ class UfcstatsSyncState:
     fight_statuses: dict[int, str]
 
     @classmethod
-    def load(cls, supabase_client: Any, source_id: int) -> "UfcstatsSyncState":
+    def load(cls, supabase_client: Any, source_id: int = 1) -> "UfcstatsSyncState":
         mappings_response = (
             supabase_client.table("external_ids")
             .select("external_id, internal_id")

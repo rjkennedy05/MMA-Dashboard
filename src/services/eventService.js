@@ -1,4 +1,3 @@
-import { readRows } from "./readRows";
 import { supabase } from "../lib/supabase";
 import { getDateInTimeZone } from "../utils/date";
 import { isDevelopmentEvent, RECENT_EVENT_DAYS } from "../utils/events";
@@ -44,7 +43,7 @@ export function selectDashboardEvents(
 export async function getUpcomingEvents() {
   const today = getDateInTimeZone();
   const previewStart = shiftDate(today, -RECENT_EVENT_DAYS);
-  const data=await readRows(()=>supabase
+  const { data, error } = await supabase
     .from("events")
     .select(`
       *,
@@ -57,9 +56,6 @@ export async function getUpcomingEvents() {
         fighter_b_id,
         fight_order,
         fight_status,
-        event_id,
-        ruleset,
-        bout_type,
         fighter_a:fighters!fights_fighter_a_id_fkey (
           full_name
         ),
@@ -71,8 +67,7 @@ export async function getUpcomingEvents() {
     .gte("event_date", previewStart)
     .order("event_date", {
       ascending: false,
-    }),"event_id");
-  const error=null;
+    });
 
   if (error) {
     throw error;

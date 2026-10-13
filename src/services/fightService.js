@@ -1,4 +1,3 @@
-import { readRows } from "./readRows";
 import { supabase } from "../lib/supabase";
 import { dedupeEventFights } from "../utils/fights";
 
@@ -7,7 +6,7 @@ export async function getFightsByEvent(eventId) {
     return [];
   }
 
-  const data=await readRows(()=>supabase
+  const { data, error } = await supabase
     .from("fights")
     .select(`
       fight_id,
@@ -85,8 +84,7 @@ export async function getFightsByEvent(eventId) {
     .eq("event_id", eventId)
     .order("fight_order", {
       ascending: true,
-    }),"fight_id");
-  const error=null;
+    });
 
   if (error) {
     throw error;

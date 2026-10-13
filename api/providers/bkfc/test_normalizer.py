@@ -1,5 +1,4 @@
 import unittest
-from copy import deepcopy
 from datetime import date
 
 from normalizer import (
@@ -100,14 +99,6 @@ FUTURE_CARD_HTML = """
 
 
 class BkfcNormalizerTests(unittest.TestCase):
-    def test_explicit_bout_cancellation_is_not_mistaken_for_a_completed_result(self):
-        stats = deepcopy(STATS)
-        stats["Bouts"]["Bout1"].update(WinMethod="Cancelled", BlueResult="", RedResult="")
-        event = parse_event_listing(LISTING_HTML, "completed")[0]
-        fights = parse_fights(event, EVENT_HTML, stats)
-        self.assertEqual(fights[0]["fight_status"], "cancelled")
-        self.assertFalse(fights[0]["fighter_a"]["winner"])
-
     def test_parses_official_event_listing(self):
         event = parse_event_listing(LISTING_HTML, "upcoming")[0]
         self.assertEqual(event["external_id"], "bkfc-fight-night-sturgis")

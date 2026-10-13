@@ -50,7 +50,3 @@ test("active rebooked row wins over a cancelled duplicate", () => {
   const active = fight({ fight_id: 20, fight_status: "scheduled" });
   assert.equal(dedupeEventFights([cancelled, active])[0].fight_id, 20);
 });
-
-test("the same opponents in different sports or events keep separate bouts",()=>{
-  assert.equal(dedupeEventFights([fight({event_id:1}),fight({fight_id:11,event_id:1,ruleset:"Kickboxing"}),fight({fight_id:12,event_id:2})]).length,3);
-});

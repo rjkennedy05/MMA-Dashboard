@@ -5,6 +5,7 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from supabase import create_client
 
 try:
     from .response_utils import decode_utf8_json, resolve_regions
@@ -28,8 +29,41 @@ THE_ODDS_API_KEY = os.getenv(
     "THE_ODDS_API_KEY"
 )
 
+SUPABASE_URL = os.getenv(
+    "SUPABASE_URL"
+)
+
+SUPABASE_SERVICE_KEY = os.getenv(
+    "SUPABASE_SERVICE_KEY"
+)
+
 THE_ODDS_API_REGIONS = resolve_regions(
     os.getenv("THE_ODDS_API_REGIONS")
+)
+
+
+if not THE_ODDS_API_KEY:
+    raise ValueError(
+        "THE_ODDS_API_KEY is missing "
+        "from api/.env"
+    )
+
+if not SUPABASE_URL:
+    raise ValueError(
+        "SUPABASE_URL is missing "
+        "from api/.env"
+    )
+
+if not SUPABASE_SERVICE_KEY:
+    raise ValueError(
+        "SUPABASE_SERVICE_KEY is missing "
+        "from api/.env"
+    )
+
+
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_SERVICE_KEY,
 )
 
 
@@ -44,15 +78,13 @@ MMA_SPORT_KEY = (
 
 def get_current_mma_moneylines(
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    api_key=os.getenv("THE_ODDS_API_KEY") or THE_ODDS_API_KEY
-    if not api_key:raise ValueError("THE_ODDS_API_KEY is missing from api/.env")
     response = requests.get(
         (
             f"{BASE_URL}/sports/"
             f"{MMA_SPORT_KEY}/odds"
         ),
         params={
-            "apiKey": api_key,
+            "apiKey": THE_ODDS_API_KEY,
             "regions": THE_ODDS_API_REGIONS,
             "markets": "h2h",
             "oddsFormat": "american",

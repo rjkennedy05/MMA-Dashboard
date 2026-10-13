@@ -13,8 +13,6 @@ for root in (API_ROOT, UFCSTATS_ROOT):
         sys.path.insert(0, str(root))
 
 from uploader import supabase  # noqa: E402
-from providers.errors import safe_error
-from sync.cards import recoverable_bout_error
 from providers.the_odds_api.import_one_matchup import import_moneylines  # noqa: E402
 
 from .client import FightOddsClient
@@ -146,7 +144,7 @@ def import_fightodds_odds(target_cards: list[dict[str, Any]]) -> dict[str, Any]:
                 metrics["review_sample"].append({
                     "event": card.get("event_name"),
                     "status": "failed",
-                    "reason": safe_error(error),
+                    "reason": str(error),
                 })
                 continue
 
@@ -182,27 +180,19 @@ def import_fightodds_odds(target_cards: list[dict[str, Any]]) -> dict[str, Any]:
                         })
                     continue
 
-                try:
-                    result = import_moneylines(
-                        _api_shape(external_fight, fight_result["fight"],
-                                   fight_result["orientation"], str(card.get("event_date") or "")),
-                        fight_result["fight"], source_id,
-                    )
-                except Exception as error:
-                    if not recoverable_bout_error(error):
-                        raise
-                    metrics["failures"] += 1
-                    metrics.setdefault("failure_messages", []).append(safe_error(error))
-                    if len(metrics["review_sample"]) < 12:
-                        metrics["review_sample"].append({"event": card.get("event_name"),
-                            "matchup": matchup, "status": "review", "reason": safe_error(error)})
-                    continue
+                result = import_moneylines(
+                    _api_shape(
+                        external_fight,
+                        fight_result["fight"],
+                        fight_result["orientation"],
+                        str(card.get("event_date") or ""),
+                    ),
+                    fight_result["fight"],
+                    source_id,
+                )
                 metrics["matched"] += 1
                 metrics["inserted"] += int(result["inserted"])
                 metrics["unchanged"] += int(result["unchanged"])
-                if result.get("errors"):
-                    metrics["failures"] += len(result["errors"])
-                    metrics.setdefault("failure_messages", []).extend(safe_error(item["message"]) for item in result["errors"])
 
         metrics["requests"] = client.request_count
 

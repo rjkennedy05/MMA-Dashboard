@@ -25,18 +25,15 @@ def archive_missing_scheduled_fights(
     supabase: Any,
     event_id: int,
     active_fight_ids: Iterable[int],
-    *,
-    confirmed_cancelled_ids: Iterable[int] = (),
 ) -> list[int]:
-    """Only explicit cancellation evidence can cancel an omitted matchup.
+    """Archive stale scheduled rows after a complete, non-empty card import.
 
-    A successful nonempty response is not evidence of a complete source card.
-    Existing callers preserve omitted fights; normalized explicit cancellations
-    continue to be saved through their ordinary fight imports.
+    The caller is responsible for invoking this only after the provider card and
+    every current matchup imported successfully. Research and bets remain linked
+    to the archived row because the row is updated rather than deleted.
     """
     active = [int(fight_id) for fight_id in active_fight_ids if fight_id is not None]
-    confirmed = {int(value) for value in confirmed_cancelled_ids}
-    if not active or not confirmed:
+    if not active:
         return []
 
     response = (
@@ -46,7 +43,7 @@ def archive_missing_scheduled_fights(
         .in_("fight_status", ["scheduled", "upcoming"])
         .execute()
     )
-    stale_ids = [value for value in missing_scheduled_fight_ids(response.data or [], active) if value in confirmed]
+    stale_ids = missing_scheduled_fight_ids(response.data or [], active)
     if not stale_ids:
         return []
 
